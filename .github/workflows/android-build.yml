@@ -1,0 +1,53 @@
+name: Android Build
+
+# Workflow novo, escrito de raiz — não copiado do pg-sp (não foi lido,
+# conforme pedido). Por agora só compila um APK de debug, para validar
+# que o projeto builda a cada push/PR. Assinatura de release (keystore,
+# alias, senhas via GitHub Secrets) fica por adicionar até termos esses
+# dados reais — não inventados aqui.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Garante platform 34 + build-tools instalados e licenças aceites —
+      # não depender só do que a imagem do runner já trouxer pré-instalado.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # NOTA 1: este projecto ainda não tem o gradle-wrapper.jar comitado
+      # (binário — não gerável neste ambiente sem acesso à rede do
+      # Gradle). Até ser gerado localmente com `gradle wrapper` e
+      # comitado, o runner instala o próprio Gradle em vez de usar
+      # ./gradlew. Assim que o wrapper existir no repo, trocar este passo
+      # por `./gradlew assembleDebug` (mais rápido e reprodutível).
+      # NOTA 2: sem assinatura de release por agora — não vamos para a
+      # Play Store nesta fase, só APKs de debug para sideload.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Assemble debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixgo-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
