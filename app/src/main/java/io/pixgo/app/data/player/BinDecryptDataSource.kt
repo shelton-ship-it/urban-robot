@@ -2,6 +2,7 @@ package io.pixgo.app.data.player
 
 import android.net.Uri
 import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSourceException
@@ -52,13 +53,13 @@ class BinDecryptDataSource(
                 resp.body?.bytes() ?: ByteArray(0)
             }
         } catch (e: IOException) {
-            throw DataSourceException(e, DataSourceException.TYPE_OPEN)
+            throw DataSourceException(e, PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED)
         }
 
         val payload = if (url.endsWith(".bin")) {
             val key = keyProvider() ?: throw DataSourceException(
                 "Chave de decifra indisponível para $url",
-                DataSourceException.TYPE_OPEN
+                PlaybackException.ERROR_CODE_IO_UNSPECIFIED
             )
             BinFormat.decrypt(raw, key)
         } else {
