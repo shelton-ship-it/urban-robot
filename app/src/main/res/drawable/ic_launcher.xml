@@ -3,8 +3,8 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Fundo: --color-bg-dark (#0a0a0c) e monograma "P" em
-         --color-primary (#e50914) — as duas cores confirmadas em
+    <!-- Fundo: color-bg-dark (#0a0a0c) e monograma "P" em
+         color-primary (#e50914) — as duas cores confirmadas em
          app/globals.css. Ícone provisório, só para o build não falhar
          por recurso em falta; trocar por uma arte real quando houver. -->
     <path
