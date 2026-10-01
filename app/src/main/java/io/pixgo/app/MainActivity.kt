@@ -5,6 +5,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -206,7 +208,7 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
                         title = { Text("Conta") },
                         navigationIcon = {
                             IconButton(onClick = { accountScreenOpen = false }) {
-                                Icon(androidx.compose.material.icons.Icons.Filled.ArrowBack, contentDescription = "Voltar")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Voltar")
                             }
                         }
                     )
@@ -250,7 +252,7 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
                         title = { Text("Informação Legal") },
                         navigationIcon = {
                             IconButton(onClick = { legalScreenOpen = false }) {
-                                Icon(androidx.compose.material.icons.Icons.Filled.ArrowBack, contentDescription = "Voltar")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Voltar")
                             }
                         }
                     )
