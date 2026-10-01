@@ -1,6 +1,6 @@
 <resources>
-    <!-- Paleta base tirada literalmente de app/globals.css (--color-primary
-         #e50914, --color-bg-dark #0a0a0c) — não inventada. O resto do
+    <!-- Paleta base tirada literalmente de app/globals.css (color-primary
+         #e50914, color-bg-dark #0a0a0c) — não inventada. O resto do
          tema (tipografia Bebas/Inter, espaçamentos, cards) só se define
          depois de trazer os tokens completos do globals.css para cá,
          na Fase 3 de UI. -->
