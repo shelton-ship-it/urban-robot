@@ -33,6 +33,17 @@ interface StreamApi {
     @GET("/api/content/{id}/stream")
     suspend fun stream(@Path("id") contentId: String, @QueryMap params: Map<String, String>): Response<StreamResponse>
 
+    /**
+     * GET /api/content/:id/download — routes/content.js. Manifesto real de
+     * download offline (license/expires_at/drm_key_hex/manifest com segUrls,
+     * noncesUrl, initUrl). Query "episode" confirmada no fetch da watch page.
+     */
+    @GET("/api/content/{id}/download")
+    suspend fun download(
+        @Path("id") contentId: String,
+        @QueryMap params: Map<String, String>,
+    ): Response<io.pixgo.app.data.download.DownloadResponse>
+
     @retrofit2.http.POST("/api/content/{id}/heartbeat")
     suspend fun heartbeat(@Path("id") contentId: String, @Body body: HeartbeatBody): Response<Unit>
 }

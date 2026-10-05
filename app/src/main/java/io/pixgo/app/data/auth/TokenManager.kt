@@ -2,6 +2,7 @@ package io.pixgo.app.data.auth
 
 import android.content.Context
 import android.util.Base64
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -28,6 +29,10 @@ class TokenManager(private val context: Context) {
         private val KEY_REFRESH = stringPreferencesKey("pixgo_refresh")
         private val KEY_ACTIVE_PROFILE = stringPreferencesKey("pixgo_active_profile")
         private val KEY_ME_CACHE = stringPreferencesKey("pixgo_me_cache")
+        private val KEY_UPLOAD_TERMS = booleanPreferencesKey("pixgo_upload_terms_accepted")
+        private val KEY_DISCLAIMER_DISMISSED = booleanPreferencesKey("pixgo_disclaimer_dismissed")
+        private val KEY_PIXEL_GREETED = booleanPreferencesKey("pixgo_pixel_greeted")
+        private val KEY_PLANS_MODAL_SEEN = stringPreferencesKey("px_plans_modal_last_seen")
 
         const val ME_CACHE_TTL_MS = 30 * 60 * 1000L
         const val ME_CACHE_FREE_TTL_MS = 60 * 1000L
@@ -68,6 +73,38 @@ class TokenManager(private val context: Context) {
     /** Só apaga o cache de /me — usado no equivalente ao fluxo ?px_paid= do pixel */
     suspend fun clearMeCache() {
         context.authDataStore.edit { it.remove(KEY_ME_CACHE) }
+    }
+
+    /**
+     * Consentimento único dos termos de upload — equivalente Android do
+     * localStorage 'pixgo_upload_terms_accepted' (upload/page.tsx).
+     */
+    suspend fun getUploadTermsAccepted(): Boolean =
+        context.authDataStore.data.first()[KEY_UPLOAD_TERMS] ?: false
+
+    suspend fun setUploadTermsAccepted(accepted: Boolean) {
+        context.authDataStore.edit { it[KEY_UPLOAD_TERMS] = accepted }
+    }
+
+    /**
+     * Equivalente Android do localStorage 'pixgo_disclaimer_dismissed'
+     * (DisclaimerGate em Providers.tsx). Mesma chave de padrão já usada.
+     */
+    suspend fun isDisclaimerDismissed(): Boolean =
+        context.authDataStore.data.first()[KEY_DISCLAIMER_DISMISSED] ?: false
+
+    /** PixelChatbot.tsx: GREETING_KEY 'pixgo_pixel_greeted' — balão proactivo só uma vez por dispositivo. */
+    suspend fun isPixelGreeted(): Boolean = context.authDataStore.data.first()[KEY_PIXEL_GREETED] ?: false
+    suspend fun setPixelGreeted() { context.authDataStore.edit { it[KEY_PIXEL_GREETED] = true } }
+
+    /** PlansModal.tsx: SEEN_KEY 'px_plans_modal_last_seen' (YYYY-MM-DD) — no máx. 1x por dia. */
+    suspend fun getPlansModalLastSeen(): String? = context.authDataStore.data.first()[KEY_PLANS_MODAL_SEEN]
+    suspend fun setPlansModalLastSeen(day: String) {
+        context.authDataStore.edit { it[KEY_PLANS_MODAL_SEEN] = day }
+    }
+
+    suspend fun setDisclaimerDismissed(dismissed: Boolean) {
+        context.authDataStore.edit { it[KEY_DISCLAIMER_DISMISSED] = dismissed }
     }
 
     /**

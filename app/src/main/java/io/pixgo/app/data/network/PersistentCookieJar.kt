@@ -98,4 +98,17 @@ class PersistentCookieJar(private val context: Context) : CookieJar {
         ensureLoaded()
         return store.values.toList()
     }
+
+    /**
+     * Caminho INVERSO do WebViewCookieSync: importa um cookie gravado pelo
+     * android.webkit.CookieManager (ex.: pixgo_session definido pelo hub
+     * durante o login na HubLoginSheet) para este jar OkHttp, usando o
+     * MESMO mecanismo de persistência já existente (Cookie.parse +
+     * saveFromResponse -> DataStore). Não cria sistema paralelo.
+     */
+    fun importCookie(context: Context, url: String, setCookieHeader: String) {
+        val httpUrl = url.toHttpUrlOrNull() ?: return
+        val cookie = Cookie.parse(httpUrl, setCookieHeader) ?: return
+        saveFromResponse(httpUrl, listOf(cookie))
+    }
 }

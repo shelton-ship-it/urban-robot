@@ -3,7 +3,7 @@ package io.pixgo.app.data.channels
 import android.content.Context
 import io.pixgo.app.data.auth.AuthRepository
 import io.pixgo.app.data.auth.TokenManager
-import io.pixgo.app.data.network.HeartbeatErrorBody
+import io.pixgo.app.data.model.StreamLimitErrorBody
 import io.pixgo.app.data.network.NetworkModule
 import io.pixgo.app.data.player.HeartbeatEvent
 import kotlinx.serialization.json.Json
@@ -12,6 +12,8 @@ import retrofit2.Response
 sealed class ChannelGateResult {
     object Ok : ChannelGateResult()
     data class Denied(val message: String) : ChannelGateResult()
+    /** 429 do gate: channels/page.tsx abre o RateLimitModal com `err.data.plans`. */
+    data class RateLimited(val message: String?, val plans: List<io.pixgo.app.data.model.UpsellPlan>) : ChannelGateResult()
 }
 
 class ChannelsRepository(context: Context, private val auth: AuthRepository) {
@@ -20,7 +22,7 @@ class ChannelsRepository(context: Context, private val auth: AuthRepository) {
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun categories() = ChannelsSource.getCategories()
-    suspend fun list(page: Int, category: String?, hasUser: Boolean) = ChannelsSource.listChannels(page, category, hasUser)
+    suspend fun list(page: Int, category: String?, hasUser: Boolean, limit: Int = 24) = ChannelsSource.listChannels(page, category, hasUser, limit)
     suspend fun search(query: String, hasUser: Boolean) = ChannelsSource.searchChannels(query, hasUser)
 
     private suspend fun <T> retryOn401(call: suspend () -> Response<T>): Response<T> {
@@ -34,12 +36,14 @@ class ChannelsRepository(context: Context, private val auth: AuthRepository) {
         return try {
             val resp = retryOn401 { api.gate(channelId) }
             if (resp.isSuccessful) ChannelGateResult.Ok
-            else ChannelGateResult.Denied(
+            else if (resp.code() == 429) {
+                val err = parseErrorMessage(resp)
+                ChannelGateResult.RateLimited(null, err?.plans ?: emptyList())
+            } else ChannelGateResult.Denied(
                 when (resp.code()) {
-                    429 -> "Limite diário de streaming atingido."
                     409 -> "Sessão substituída noutro ecrã."
                     401 -> "Faça login para aceder ao canal."
-                    else -> "Não foi possível abrir o canal."
+                    else -> parseErrorMessage(resp)?.message ?: "Erro ao carregar canal."
                 }
             )
         } catch (e: Exception) {
@@ -71,8 +75,8 @@ class ChannelsRepository(context: Context, private val auth: AuthRepository) {
         }
     }
 
-    private fun parseErrorMessage(resp: Response<*>): HeartbeatErrorBody? {
+    private fun parseErrorMessage(resp: Response<*>): StreamLimitErrorBody? {
         val raw = resp.errorBody()?.string() ?: return null
-        return try { json.decodeFromString(HeartbeatErrorBody.serializer(), raw) } catch (e: Exception) { null }
+        return try { json.decodeFromString(StreamLimitErrorBody.serializer(), raw) } catch (e: Exception) { null }
     }
 }

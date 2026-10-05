@@ -3,7 +3,9 @@ package io.pixgo.app.data.network
 import android.content.Context
 import io.pixgo.app.data.auth.TokenManager
 import kotlinx.coroutines.runBlocking
+import java.io.File
 import kotlinx.serialization.json.Json
+import okhttp3.Cache
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -37,6 +39,20 @@ object NetworkModule {
     @Volatile private var cookieJar: PersistentCookieJar? = null
     @Volatile private var okHttpClient: OkHttpClient? = null
 
+    /**
+     * Importa cookies gravados pelo android.webkit.CookieManager (ex.: o
+     * pixgo_session + token definidos pelo hub durante o login na
+     * HubLoginSheet) para o jar OkHttp partilhado — caminho inverso do
+     * WebViewCookieSync, usando a mesma persistência já existente.
+     */
+    fun importCookiesFromWebView(context: Context, url: String) {
+        val jar = cookieJar ?: PersistentCookieJar(context.applicationContext).also { cookieJar = it }
+        val raw = android.webkit.CookieManager.getInstance().getCookie(url) ?: return
+        raw.split(";").map { it.trim() }.filter { it.contains("=") }.forEach { pair ->
+            jar.importCookie(context, url, pair)
+        }
+    }
+
     private fun authInterceptor(tokenManager: TokenManager): Interceptor = Interceptor { chain ->
         val token = runBlocking { tokenManager.getToken() }
         val request = if (token != null) {
@@ -60,7 +76,14 @@ object NetworkModule {
             okHttpClient?.let { return it }
             val jar = cookieJar ?: PersistentCookieJar(context.applicationContext).also { cookieJar = it }
             val logging = HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC }
+            // Cache HTTP em disco (20 MB): o navegador do frontend_web já honra
+            // o Cache-Control do pixel_service (catálogo: public, max-age=60;
+            // legal: max-age=3600). Sem isto cada visita a um separador
+            // repetia o pedido ao servidor. Rotas com no-store (me, content,
+            // progress, payments, channels...) continuam a não ser guardadas.
+            val httpCache = Cache(File(context.applicationContext.cacheDir, "http_cache"), 20L * 1024 * 1024)
             val client = OkHttpClient.Builder()
+                .cache(httpCache)
                 .cookieJar(jar)
                 .addInterceptor(authInterceptor(tokenManager))
                 .addInterceptor(logging)
@@ -97,6 +120,14 @@ object NetworkModule {
 
     fun contact(tokenManager: TokenManager): ContactApi =
         retrofit(Hosts.COPYRIGHT, contactHttp(tokenManager)).create(ContactApi::class.java)
+
+    /** uploadApi do original (lib/api.ts) — mesmo Worker, mesmo cliente isolado. */
+    fun upload(tokenManager: TokenManager): UploadApi =
+        retrofit(Hosts.COPYRIGHT, contactHttp(tokenManager)).create(UploadApi::class.java)
+
+    /** copyrightApi do original (lib/api.ts) — endpoints públicos, sem Authorization nem cookies. */
+    fun copyright(): CopyrightApi =
+        retrofit(Hosts.COPYRIGHT, plainHttpClient()).create(CopyrightApi::class.java)
 
     private fun retrofit(baseUrl: String, client: OkHttpClient): Retrofit {
         val contentType = "application/json".toMediaType()

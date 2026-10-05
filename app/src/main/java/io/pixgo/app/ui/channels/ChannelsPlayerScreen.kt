@@ -53,14 +53,16 @@ fun ChannelsPlayerScreen(
     channelName: String,
     streamUrl: String,
     channelsRepository: ChannelsRepository,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onUpgrade: (planId: String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     var loading by remember { mutableStateOf(true) }
     var sessionReplacedMessage by remember { mutableStateOf<String?>(null) }
-    var freeTimeMessage by remember { mutableStateOf<String?>(null) }
+    // channels/page.tsx: onFreeTimeExhausted(plans, message) → RateLimitModal; onSessionReplaced(message) → SessionReplacedModal
+    var freeTime by remember { mutableStateOf<Pair<String?, List<io.pixgo.app.data.model.UpsellPlan>>?>(null) }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -87,7 +89,7 @@ fun ChannelsPlayerScreen(
                 }
                 is HeartbeatEvent.FreeTimeExhausted -> {
                     exoPlayer.pause()
-                    freeTimeMessage = event.message ?: "Tempo grátis esgotado."
+                    freeTime = event.message to event.plans
                 }
                 HeartbeatEvent.Ok -> {}
             }
@@ -132,20 +134,18 @@ fun ChannelsPlayerScreen(
     }
 
     sessionReplacedMessage?.let { msg ->
-        AlertDialog(
-            onDismissRequest = { sessionReplacedMessage = null; onClose() },
-            title = { Text("Sessão encerrada") },
-            text = { Text(msg) },
-            confirmButton = { TextButton(onClick = { sessionReplacedMessage = null; onClose() }) { Text("OK") } }
+        io.pixgo.app.ui.modals.SessionReplacedModal(
+            message = msg,
+            onClose = { sessionReplacedMessage = null; onClose() },
         )
     }
 
-    freeTimeMessage?.let { msg ->
-        AlertDialog(
-            onDismissRequest = { freeTimeMessage = null; onClose() },
-            title = { Text("Tempo grátis esgotado") },
-            text = { Text(msg) },
-            confirmButton = { TextButton(onClick = { freeTimeMessage = null; onClose() }) { Text("OK") } }
+    freeTime?.let { (message, plans) ->
+        io.pixgo.app.ui.modals.RateLimitModal(
+            plans = plans,
+            message = message,
+            onClose = { freeTime = null; onClose() },
+            onUpgrade = { planId -> freeTime = null; onUpgrade(planId) },
         )
     }
 }

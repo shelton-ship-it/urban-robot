@@ -8,6 +8,11 @@ import retrofit2.http.POST
 @Serializable data class ReportAbuseBody(val contentTitle: String, val reason: String)
 @Serializable data class SupportBody(val email: String, val message: String)
 
+/** chatApi.send (lib/api.ts) — POST /chat { message, history[{role,content}] } → { reply } */
+@Serializable data class ChatMessageDto(val role: String, val content: String)
+@Serializable data class ChatBody(val message: String, val history: List<ChatMessageDto>)
+@Serializable data class ChatReply(val reply: String? = null)
+
 /**
  * copyright.pixgo.qzz.io — Worker de moderação separado (lib/api.ts:
  * uploadReq/contactApi), fora da API principal. Só Bearer token, sem
@@ -21,4 +26,7 @@ interface ContactApi {
 
     @POST("/support")
     suspend fun support(@Body body: SupportBody): Response<Unit>
+
+    @POST("/chat")
+    suspend fun chat(@Body body: ChatBody): Response<ChatReply>
 }

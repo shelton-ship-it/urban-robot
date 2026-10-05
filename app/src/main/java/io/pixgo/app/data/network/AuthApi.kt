@@ -1,6 +1,7 @@
 package io.pixgo.app.data.network
 
 import io.pixgo.app.data.model.AuthResponse
+import io.pixgo.app.data.model.HubPlansResponse
 import io.pixgo.app.data.model.Plan
 import io.pixgo.app.data.model.Profile
 import io.pixgo.app.data.model.User
@@ -14,6 +15,15 @@ import retrofit2.http.Path
 import kotlinx.serialization.Serializable
 
 @Serializable data class LoginBody(val username: String, val password: String)
+/** POST /api/auth/register (hub) — mesmo payload de useAuthStore.register(): email omitido quando vazio. */
+@Serializable data class RegisterBody(
+    val name: String,
+    val username: String,
+    val email: String? = null,
+    val password: String
+)
+/** POST /api/auth/google (hub) — body { credential } = ID token do Google Identity Services. */
+@Serializable data class GoogleCredentialBody(val credential: String)
 @Serializable data class RefreshBody(@kotlinx.serialization.SerialName("refresh_token") val refreshToken: String? = null)
 @Serializable data class DeviceActivateBody(val code: String)
 @Serializable data class UpdateMeBody(val name: String? = null, val email: String? = null)
@@ -35,10 +45,17 @@ interface ApiCoreAuthApi {
     suspend fun login(@Body body: LoginBody): Response<AuthResponse>
 
     @POST("/api/auth/register")
-    suspend fun register(@Body body: Map<String, String>): Response<AuthResponse>
+    suspend fun register(@Body body: RegisterBody): Response<AuthResponse>
+
+    @POST("/api/auth/google")
+    suspend fun loginWithGoogle(@Body body: GoogleCredentialBody): Response<AuthResponse>
 
     @POST("/api/auth/device/activate")
     suspend fun activateDeviceCode(@Body body: DeviceActivateBody): Response<AuthResponse>
+
+    /** routes/plans.js — preços do hub (env em BRL; MZN para IPs de MZ). Público. */
+    @GET("/api/plans")
+    suspend fun plans(): Response<HubPlansResponse>
 }
 
 /**

@@ -30,6 +30,13 @@ val SUPPORTED_LANGUAGES = listOf(
 class LanguageManager(private val context: Context) {
     val languageCode: Flow<String> = context.langDataStore.data.map { it[KEY_LANG] ?: "pt" }
 
+    /**
+     * Equivalente ao gate de Providers.tsx no web: `localStorage.getItem('pixgo_lang')`
+     * só existe depois da primeira escolha no LanguageModal. Aqui, ausente = modal
+     * de idioma deve aparecer uma única vez antes de qualquer conteúdo.
+     */
+    val langChosen: Flow<Boolean> = context.langDataStore.data.map { prefs -> prefs[KEY_LANG] != null }
+
     suspend fun setLanguage(code: String) {
         context.langDataStore.edit { it[KEY_LANG] = code }
     }

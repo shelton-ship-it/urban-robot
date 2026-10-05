@@ -1,0 +1,11 @@
+<resources>
+    <style name="Theme.PixGo" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorBackground">#0a0a0c</item>
+        <item name="android:windowBackground">#0a0a0c</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <!-- Equivalente ao viewport-fit=cover de app/layout.tsx: desenha sob o recorte (notch). -->
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

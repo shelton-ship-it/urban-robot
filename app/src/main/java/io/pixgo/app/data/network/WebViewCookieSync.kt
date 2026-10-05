@@ -19,9 +19,14 @@ object WebViewCookieSync {
             val url = "$scheme://${cookie.domain.trimStart('.')}/"
             val cookieStr = buildString {
                 append(cookie.name).append('=').append(cookie.value)
-                append("; Domain=").append(cookie.domain)
+                // hostOnly => sem atributo Domain (senão o cookie passaria a valer em subdomínios).
+                if (!cookie.hostOnly) append("; Domain=").append(cookie.domain)
                 append("; Path=").append(cookie.path)
                 if (cookie.secure) append("; Secure")
+                if (cookie.httpOnly) append("; HttpOnly")
+                // pixgo_session é emitido com SameSite=None (session-cookie.js); sem isto o
+                // Chromium assume Lax e a sessão não acompanha os fetch do hub dentro da WebView.
+                if (cookie.secure) append("; SameSite=None")
             }
             cm.setCookie(url, cookieStr)
         }

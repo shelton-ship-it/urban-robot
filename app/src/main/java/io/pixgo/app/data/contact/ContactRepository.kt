@@ -3,6 +3,8 @@ package io.pixgo.app.data.contact
 import android.content.Context
 import io.pixgo.app.data.auth.TokenManager
 import io.pixgo.app.data.network.NetworkModule
+import io.pixgo.app.data.network.ChatBody
+import io.pixgo.app.data.network.ChatMessageDto
 import io.pixgo.app.data.network.ReportAbuseBody
 import io.pixgo.app.data.network.SupportBody
 
@@ -15,4 +17,11 @@ class ContactRepository(context: Context) {
 
     suspend fun support(email: String, message: String): Boolean =
         try { api.support(SupportBody(email, message)).isSuccessful } catch (e: Exception) { false }
+
+    /** Pixel (PixelChatbot.tsx): devolve o texto da resposta, ou null em qualquer falha. */
+    suspend fun chat(message: String, history: List<ChatMessageDto>): String? =
+        try {
+            val r = api.chat(ChatBody(message, history))
+            if (r.isSuccessful) r.body()?.reply?.takeIf { it.isNotBlank() } else null
+        } catch (e: Exception) { null }
 }

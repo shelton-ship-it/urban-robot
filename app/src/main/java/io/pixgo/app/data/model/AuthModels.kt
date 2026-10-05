@@ -34,6 +34,45 @@ data class Plan(
     val gateway: String? = null
 )
 
+/**
+ * Item de GET /api/payments/plans (pixel_service_v1 routes/payments.js —
+ * fonte: PLANS em lib/edgeone.js + override de país em plan-pricing-read).
+ * Campos e nomes espelham exatamente o type Plan em
+ * frontend_web/src/app/main/plans/page.tsx. Nada inventado.
+ */
+@Serializable
+data class PaymentPlan(
+    val id: String,
+    val name: String,
+    val price: Double? = null,
+    val label: String? = null,
+    @SerialName("billing_cycle") val billingCycle: String? = null,
+    @SerialName("max_profiles") val maxProfiles: Int? = null,
+    @SerialName("max_downloads") val maxDownloads: Int? = null,
+    val features: List<String> = emptyList(),
+    val currency: String? = null,
+    val gateway: String? = null
+)
+
+/**
+ * GET /api/plans do api-core (hub) — routes/plans.js: { plans, current }.
+ * O preço vem de PLANS (lib/edgeone.js: PLAN_*_PRICE do env, base BRL) e, para IPs de
+ * Moçambique, já vem convertido (currency 'MZN'). `price` pode vir como número ou texto
+ * (o hub faz Number(p.price)), por isso é lido como JsonPrimitive.
+ */
+@Serializable
+data class HubPlan(
+    val id: String,
+    val name: String = "",
+    val price: kotlinx.serialization.json.JsonPrimitive? = null,
+    @SerialName("is_free") val isFree: Boolean? = null,
+    val currency: String? = null,
+    val gateway: String? = null
+)
+
+@Serializable
+data class HubPlansResponse(val plans: List<HubPlan> = emptyList())
+
 @Serializable
 data class Profile(
     val id: String,
@@ -64,5 +103,7 @@ data class MeCache(
 
 @Serializable
 data class ApiErrorBody(
-    val message: String? = null
+    val message: String? = null,
+    /** Código curto do backend (ex.: "AccountExistsUnlinked" em POST /api/auth/google). */
+    val error: String? = null
 )

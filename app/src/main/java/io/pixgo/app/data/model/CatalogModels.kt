@@ -2,6 +2,10 @@ package io.pixgo.app.data.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * Espelha exactamente o que app/main/page.tsx lê da resposta de
@@ -14,7 +18,8 @@ import kotlinx.serialization.Serializable
 data class ContentMeta(
     val title: String? = null,
     val poster: String? = null,
-    val rating: Double? = null
+    val rating: Double? = null,
+    val genres: JsonElement? = null
 )
 
 @Serializable
@@ -25,11 +30,28 @@ data class ContentItem(
     val title: String? = null,
     val poster: String? = null,
     val rating: Double? = null,
+    val genres: JsonElement? = null,
     val meta: ContentMeta? = null
 ) {
     val displayTitle: String get() = meta?.title ?: title ?: "—"
     val displayPoster: String? get() = meta?.poster ?: poster
     val displayRating: Double? get() = meta?.rating ?: rating
+    /** year/type usados pelos cards — item.year / item.type em main/page.tsx. */
+    val displayYear: Int? get() = year
+    val displayType: String? get() = type
+
+    /** lib/channelSeries.ts → isChannelSeries(): type=series + género "miniserie" (item.genres ?? item.meta?.genres). */
+    val isChannelSeries: Boolean
+        get() {
+            if (type != "series") return false
+            // Array.isArray(genres) && genres.includes('miniserie') — tolerante a formatos inesperados.
+            val arr = (genres ?: meta?.genres) as? JsonArray ?: return false
+            return arr.any { (it as? JsonPrimitive)?.contentOrNull == CHANNEL_SERIES_GENRE }
+        }
+
+    companion object {
+        const val CHANNEL_SERIES_GENRE = "miniserie"
+    }
 }
 
 @Serializable

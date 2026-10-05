@@ -7,9 +7,11 @@ import io.pixgo.app.data.model.Plan
 import io.pixgo.app.data.model.Profile
 import io.pixgo.app.data.model.User
 import io.pixgo.app.data.network.DeviceActivateBody
+import io.pixgo.app.data.network.GoogleCredentialBody
 import io.pixgo.app.data.network.LoginBody
 import io.pixgo.app.data.network.NetworkModule
 import io.pixgo.app.data.network.RefreshBody
+import io.pixgo.app.data.network.RegisterBody
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,17 +34,16 @@ data class AuthState(
     val loading: Boolean = false
 )
 
-class ApiException(val status: Int, message: String) : Exception(message)
+class ApiException(val status: Int, message: String, val error: String? = null) : Exception(message)
 
 /**
  * Réplica 1:1 de pixel/frontend_web/src/store/auth.ts — mesmas chaves,
  * mesmas regras de TTL de cache, mesmo fluxo de refresh com uma única
  * chamada em curso de cada vez (lá era uma Promise partilhada; aqui é um
- * Mutex). A única adaptação real de plataforma: o login por
- * utilizador/senha e por Google passam pelo api-core (o "hub" — ver
- * instrução do dono do projecto: app = hub de login e pagamentos) em vez
- * de um redirect de página para app.pixgo.qzz.io, porque esta app não tem
- * subdomínios separados. fetchMe/refresh/logout continuam no
+ * Mutex). A única adaptação real de plataforma: login, registo e Google
+ * chamam diretamente os endpoints REST do api-core (o "hub",
+ * /api/auth/{login,register,google}) a partir de ecrãs nativos — sem
+ * WebView e sem redirect para app.pixgo.qzz.io. fetchMe/refresh/logout continuam no
  * pixel_service (api.pixgo.qzz.io), exactamente como no store original.
  */
 class AuthRepository(private val context: Context) {
@@ -50,6 +51,7 @@ class AuthRepository(private val context: Context) {
     private val tokenManager = TokenManager(context)
     private val apiCore by lazy { NetworkModule.apiCoreAuth(context, tokenManager) }
     private val pixelService by lazy { NetworkModule.pixelServiceAuth(context, tokenManager) }
+    private val uploadApi by lazy { NetworkModule.upload(tokenManager) }
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
     private val refreshMutex = Mutex()
@@ -127,6 +129,127 @@ class AuthRepository(private val context: Context) {
         }
     }
 
+    /**
+     * "Continuar com Google" — POST /api/auth/google no hub com o ID token
+     * (credential) obtido na WebView de login. Mesmo tratamento de sucesso
+     * de login(): token + refresh_token gravados, depois fetchMe(force) para
+     * trazer perfis/plano do pixel_service (padrão confirmado em
+     * api-core/node-functions/api/routes/auth.js).
+     */
+    suspend fun loginWithGoogleCredential(credential: String) {
+        _state.value = _state.value.copy(loading = true)
+        try {
+            val resp = apiCore.loginWithGoogle(GoogleCredentialBody(credential))
+            if (!resp.isSuccessful) {
+                val e = parseErrorBody(resp)
+                throw ApiException(resp.code(), e?.message ?: "Google login failed", e?.error)
+            }
+            val data = resp.body() ?: throw ApiException(resp.code(), "Empty response")
+            applyAuthResponse(data)
+            fetchMe(force = true)
+        } finally {
+            _state.value = _state.value.copy(loading = false)
+        }
+    }
+
+    /**
+     * Registo nativo — POST /api/auth/register no hub (api-core). Mesmo payload
+     * de useAuthStore.register() em app/_shared/store/auth.ts: email só vai se
+     * preenchido. A resposta (201) traz { user, plan, token, refresh_token },
+     * tratada exatamente como o login; depois fetchMe(force) traz perfis/plano.
+     */
+    suspend fun register(name: String, username: String, email: String?, password: String) {
+        _state.value = _state.value.copy(loading = true)
+        try {
+            val resp = apiCore.register(
+                RegisterBody(
+                    name = name.trim(),
+                    username = username.trim(),
+                    email = email?.trim()?.takeIf { it.isNotEmpty() },
+                    password = password
+                )
+            )
+            if (!resp.isSuccessful) {
+                val e = parseErrorBody(resp)
+                throw ApiException(resp.code(), e?.message ?: "Register failed", e?.error)
+            }
+            val data = resp.body() ?: throw ApiException(resp.code(), "Empty response")
+            applyAuthResponse(data)
+            fetchMe(force = true)
+        } finally {
+            _state.value = _state.value.copy(loading = false)
+        }
+    }
+
+    // ── Plans: GET /api/plans do api-core (plansApi.list() do hub) ──────────────
+    /**
+     * Mesma fonte da página de planos do hub (PlansPage.tsx → plansApi.list()): preço do env
+     * do api-core (BRL), convertido para MZN quando o IP é de Moçambique. NÃO usa o
+     * /api/payments/plans do pixel_service, que tem preços fixos no código e não segue o hub.
+     * `label` sai de formatPlanPrice (port de lib/planPrice.ts), igual ao texto do hub.
+     */
+    suspend fun paymentPlans(): List<io.pixgo.app.data.model.PaymentPlan> {
+        val resp = retryOn401 { apiCore.plans() }
+        if (!resp.isSuccessful) throw ApiException(resp.code(), parseErrorMessage(resp) ?: "Failed to load plans")
+        val plans = resp.body()?.plans.orEmpty()
+        val listCurrency = plans.firstNotNullOfOrNull { it.currency }
+        return plans.map { p ->
+            val free = p.isFree == true || p.id == "free"
+            val value = p.price?.content?.toDoubleOrNull() ?: 0.0
+            io.pixgo.app.data.model.PaymentPlan(
+                id = p.id,
+                name = p.name,
+                price = value,
+                label = io.pixgo.app.data.model.formatPlanPrice(value, p.currency, free, listCurrency),
+                billingCycle = io.pixgo.app.data.model.planCycle(p.id),
+                currency = p.currency,
+                gateway = p.gateway,
+            )
+        }
+    }
+
+    // ── Upload (uploadApi real em lib/api.ts → copyright.pixgo.qzz.io) ──────
+
+    /** POST /precheck — payload idêntico ao formulário web. */
+    suspend fun uploadPrecheck(body: io.pixgo.app.data.network.UploadPrecheckRequest): UploadResult2 {
+        val resp = uploadApi.precheck(body)
+        if (!resp.isSuccessful) {
+            val raw = runCatching { resp.errorBody()?.string() }.getOrNull()
+            val msg = raw?.let { runCatching { json.decodeFromString<kotlinx.serialization.json.JsonObject>(it) }
+                .getOrNull()?.get("error")?.let { e -> (e as? kotlinx.serialization.json.JsonPrimitive)?.content } }
+            throw ApiException(resp.code(), msg ?: "Upload request failed")
+        }
+        val obj = resp.body() as? kotlinx.serialization.json.JsonObject ?: throw ApiException(resp.code(), "Empty response")
+        fun str(k: String): String? = (obj[k] as? kotlinx.serialization.json.JsonPrimitive)
+            ?.takeIf { !it.isString || it.content != "null" }?.content
+        return UploadResult2(id = str("id") ?: "", status = str("status") ?: "pending")
+    }
+
+    /** GET /precheck-status/:id — polling de 15s enquanto pending no original. */
+    suspend fun uploadStatus(id: String): UploadResult2 {
+        val resp = uploadApi.status(id)
+        if (!resp.isSuccessful) throw ApiException(resp.code(), "Upload status failed")
+        val b = resp.body() ?: throw ApiException(resp.code(), "Empty response")
+        return UploadResult2(id = b.id ?: id, status = b.status ?: "pending")
+    }
+
+    data class UploadResult2(val id: String, val status: String)
+
+    suspend fun getUploadTermsAccepted(): Boolean = tokenManager.getUploadTermsAccepted()
+    suspend fun setUploadTermsAccepted(accepted: Boolean) = tokenManager.setUploadTermsAccepted(accepted)
+
+    /**
+     * Equivalente ao localStorage 'pixgo_disclaimer_dismissed' do gate real em
+     * Providers.tsx (DisclaimerGate). Reutiliza o mesmo DataStore do TokenManager;
+     * chave nova, nada existente alterado.
+     */
+    suspend fun isDisclaimerDismissed(): Boolean = tokenManager.isDisclaimerDismissed()
+    suspend fun setDisclaimerDismissed(dismissed: Boolean) = tokenManager.setDisclaimerDismissed(dismissed)
+    suspend fun isPixelGreeted(): Boolean = tokenManager.isPixelGreeted()
+    suspend fun markPixelGreeted() = tokenManager.setPixelGreeted()
+    suspend fun plansModalLastSeen(): String? = tokenManager.getPlansModalLastSeen()
+    suspend fun markPlansModalSeen(day: String) = tokenManager.setPlansModalLastSeen(day)
+
     private suspend fun applyAuthResponse(data: AuthResponse) {
         data.token?.let { tokenManager.setToken(it) }
         data.refreshToken?.let { tokenManager.setRefreshToken(it) }
@@ -157,9 +280,21 @@ class AuthRepository(private val context: Context) {
 
         try {
             val resp = authedMe()
-            if (resp == null || !resp.isSuccessful) {
-                tokenManager.clearAll()
-                _state.value = AuthState(hydrated = true)
+            if (resp == null) {
+                _state.value = _state.value.copy(hydrated = true, token = tokenManager.getToken())
+                return
+            }
+            if (!resp.isSuccessful) {
+                // Só 401/403 = credencial realmente inválida. O backend devolve 503
+                // para falha de infraestrutura (routes/auth.js GET /me: "o cliente
+                // mantém a sessão e tenta de novo") — apagar o token aqui expulsava
+                // a pessoa logo após um login bem-sucedido.
+                if (resp.code() == 401 || resp.code() == 403) {
+                    tokenManager.clearAll()
+                    _state.value = AuthState(hydrated = true)
+                } else {
+                    _state.value = _state.value.copy(hydrated = true, token = tokenManager.getToken())
+                }
                 return
             }
             val data = resp.body() ?: AuthResponse()
@@ -276,10 +411,12 @@ class AuthRepository(private val context: Context) {
         fetchMe(force = true)
     }
 
-    private fun parseErrorMessage(resp: retrofit2.Response<*>): String? = try {
+    private fun parseErrorBody(resp: retrofit2.Response<*>): io.pixgo.app.data.model.ApiErrorBody? = try {
         val body = resp.errorBody()?.string()
-        body?.let { json.decodeFromString<io.pixgo.app.data.model.ApiErrorBody>(it).message }
+        body?.let { json.decodeFromString<io.pixgo.app.data.model.ApiErrorBody>(it) }
     } catch (e: Exception) {
         null
     }
+
+    private fun parseErrorMessage(resp: retrofit2.Response<*>): String? = parseErrorBody(resp)?.message
 }

@@ -1,0 +1,17 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Fundo: color-bg-dark (#0a0a0c) e monograma "P" em
+         color-primary (#e50914) — as duas cores confirmadas em
+         app/globals.css. Ícone provisório, só para o build não falhar
+         por recurso em falta; trocar por uma arte real quando houver. -->
+    <path
+        android:pathData="M0,0h108v108h-108z"
+        android:fillColor="#0A0A0C" />
+    <path
+        android:pathData="M38,26 h20 a18,18 0 0 1 0,36 h-8 v20 h-12 z M50,38 v12 h8 a6,6 0 0 0 0,-12 z"
+        android:fillColor="#E50914"
+        android:fillType="evenOdd" />
+</vector>

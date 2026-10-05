@@ -147,13 +147,13 @@ object ChannelsSource {
         locked = !hasUser, hasAccess = hasUser, url = if (hasUser) ch.url else null
     )
 
-    suspend fun listChannels(page: Int, category: String?, hasUser: Boolean): ChannelsPage {
+    suspend fun listChannels(page: Int, category: String?, hasUser: Boolean, limit: Int = ITEMS_LIMIT): ChannelsPage {
         val all = dedupe(getRawChannels())
         val filtered = if (category != null) all.filter { it.group.equals(category, ignoreCase = true) } else all
         val total = filtered.size
-        val offset = (page - 1) * ITEMS_LIMIT
-        val paginated = filtered.drop(offset).take(ITEMS_LIMIT).map { mapForList(it, hasUser) }
-        return ChannelsPage(paginated, maxOf(1, (total + ITEMS_LIMIT - 1) / ITEMS_LIMIT), all.size)
+        val offset = (page - 1) * limit
+        val paginated = filtered.drop(offset).take(limit).map { mapForList(it, hasUser) }
+        return ChannelsPage(paginated, maxOf(1, (total + limit - 1) / limit), all.size)
     }
 
     suspend fun getCategories(): List<ChannelCategory> {
