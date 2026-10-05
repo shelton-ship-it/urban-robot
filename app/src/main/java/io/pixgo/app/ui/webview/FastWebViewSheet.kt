@@ -21,7 +21,6 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -280,7 +279,9 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit) {
             }
 
             // Carregamento: cobre exatamente a área da WebView e centra o anel no meio dela.
-            AnimatedVisibility(
+            // Nome totalmente qualificado: dentro de Column > Box, o import resolvia para
+            // ColumnScope.AnimatedVisibility, bloqueado pelo BoxScope (@LayoutScopeMarker).
+            androidx.compose.animation.AnimatedVisibility(
                 visible = !pageReady && !failed,
                 exit = fadeOut(),
                 modifier = Modifier.fillMaxSize()

@@ -263,6 +263,28 @@ class AuthRepository(private val context: Context) {
         )
     }
 
+    /**
+     * Sessão importada do WebView do hub (HubLoginSheet): guarda pixgo_token /
+     * pixgo_refresh (mesmas chaves de store/auth.ts) e reflete o token no estado.
+     * Só com refresh (sem access token), troca-o por um access token novo via
+     * refreshAccessToken() — o mesmo fluxo do refresh automático em 401.
+     */
+    suspend fun storeHubTokens(token: String?, refresh: String?) {
+        refresh?.let { tokenManager.setRefreshToken(it) }
+        if (token != null) {
+            tokenManager.setToken(token)
+            _state.value = _state.value.copy(token = token)
+        } else if (refresh != null && tokenManager.getToken() == null) {
+            refreshAccessToken()
+        }
+    }
+
+    /** Token Bearer entregue pela bridge JS (PixGoNative.onToken) do HubLoginSheet. */
+    suspend fun storeExternalToken(token: String) {
+        tokenManager.setToken(token)
+        _state.value = _state.value.copy(token = token)
+    }
+
     suspend fun fetchMe(force: Boolean = false) {
         val cacheRaw = tokenManager.getMeCacheRaw()
         val cache = cacheRaw?.let { runCatching { json.decodeFromString<MeCache>(it) }.getOrNull() }
