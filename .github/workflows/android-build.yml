@@ -25,10 +25,17 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Garante platform 34 + build-tools instalados e licenças aceites —
-      # não depender só do que a imagem do runner já trouxer pré-instalado.
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # O runner ubuntu-latest já traz o Android SDK (ANDROID_HOME). O passo
+      # android-actions/setup-android@v3 falhava aqui com "Failed to find package
+      # 'tools'": por defeito ele corre `sdkmanager tools platform-tools`, e o pacote
+      # `tools` já não existe nos cmdline-tools atuais (16.x). Em vez dele, aceitamos
+      # as licenças e garantimos platform 34 + build-tools diretamente com o
+      # sdkmanager do próprio runner (sem o pacote obsoleto).
+      - name: Accept Android SDK licenses and install platform 34
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0"
 
       # NOTA 1: este projecto ainda não tem o gradle-wrapper.jar comitado
       # (binário — não gerável neste ambiente sem acesso à rede do
