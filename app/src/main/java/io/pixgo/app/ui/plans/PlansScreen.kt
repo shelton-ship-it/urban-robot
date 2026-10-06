@@ -129,18 +129,23 @@ fun PlansScreen(
         onSubscribe("$HUB_CHECKOUT_URL?plan=$planId&return_to=${Uri.encode(returnTo)}")
     }
 
+    val narrow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp <= 768
+
     Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(pagePadding()),
     ) {
-        // .page-header: título + subtítulo (+ selo M-Pesa quando a moeda é MZN)
-        Column(Modifier.fillMaxWidth()) {
-            PxPageHeader(title = t.t("plans.title"), subtitle = t.t("plans.subtitle"))
+        // Cabeçalho COMPACTO: os cards ficam logo a seguir a "Escolha o plano…"
+        // (PxPageHeader tinha 22dp extra e o loading ocupava 320dp mínimos —
+        // era isso que empurrava os cards para baixo).
+        Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+            Text(t.t("plans.title"), style = io.pixgo.app.ui.common.PxText.pageTitle())
+            Text(t.t("plans.subtitle"), style = io.pixgo.app.ui.common.PxText.PageSubtitle, modifier = Modifier.padding(top = 3.dp))
             if (isMZN) {
                 Row(
-                    Modifier.padding(top = 0.dp, bottom = 12.dp),
+                    Modifier.padding(top = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -155,7 +160,18 @@ fun PlansScreen(
             }
         }
 
-        if (loading) PxPageLoading(Modifier.height(120.dp))
+        // Skeleton dos cards (nada de spinner) enquanto os planos carregam.
+        if (loading) {
+            if (narrow) {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    repeat(2) { io.pixgo.app.ui.common.PxPlanCardSkeleton(Modifier.fillMaxWidth()) }
+                }
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                    repeat(3) { io.pixgo.app.ui.common.PxPlanCardSkeleton(Modifier.width(320.dp)) }
+                }
+            }
+        }
 
         if (!loading && error) {
             // Texto literal idêntico ao fallback da página web.
@@ -170,7 +186,6 @@ fun PlansScreen(
             // Layout determinístico (antes: FlowRow com fillMaxWidth + widthIn, que em
             // ecrãs estreitos inflava o espaço antes dos planos). Estreito: uma coluna
             // de cards, logo abaixo do cabeçalho. Largo: cards lado a lado (.flex 1 1 280).
-            val narrow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp <= 768
             if (narrow) {
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     plans.forEach { p ->

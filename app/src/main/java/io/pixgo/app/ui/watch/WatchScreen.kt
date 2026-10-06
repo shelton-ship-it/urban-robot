@@ -1,6 +1,7 @@
 package io.pixgo.app.ui.watch
 
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,6 +48,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,7 +80,8 @@ import io.pixgo.app.ui.common.PxBadgeKind
 import io.pixgo.app.ui.common.PxBtnSize
 import io.pixgo.app.ui.common.PxBtnVariant
 import io.pixgo.app.ui.common.PxButton
-import io.pixgo.app.ui.common.PxLoadingRing
+import io.pixgo.app.ui.common.PxWatchDetailsSkeleton
+import io.pixgo.app.ui.common.rememberFullscreenState
 import io.pixgo.app.ui.common.pxTap
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -151,9 +154,16 @@ fun WatchScreen(
 
     // Modais — dados SEMPRE vindos do body real do backend (nunca hardcoded).
     var rateLimit by remember { mutableStateOf<Pair<String?, List<UpsellPlan>>?>(null) }
-    // Fullscreen da Watch: player ocupa a janela inteira e o chrome some
-    // (equivalente ao requestFullscreen do PlayerView web).
-    var fullscreen by remember(contentId) { mutableStateOf(false) }
+    // Ecrã inteiro DERIVADO da orientação (como o YouTube): paisagem = ecrã inteiro,
+    // retrato = 16:9 + detalhes. O botão nativo do player só roda o aparelho. O
+    // player é UM ÚNICO ponto na árvore — só o tamanho muda — logo o vídeo nunca
+    // reinicia ao rodar nem ao entrar/sair do ecrã inteiro.
+    val fs = rememberFullscreenState()
+    val fullscreen = fs.isFullscreen
+    val fsS by rememberUpdatedState(fs)
+    val onCloseS by rememberUpdatedState(onClose)
+    // Voltar: sai do ecrã inteiro; senão fecha a Watch (nunca sai da app).
+    BackHandler { if (fsS.isFullscreen) fsS.toggle() else onCloseS() }
     var sessionReplaced by remember { mutableStateOf<String?>(null) }
 
     // Throttle do heartbeat de progresso (lastProgressSave/lastProgressPct do original).
@@ -248,62 +258,33 @@ fun WatchScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Px.BgDark)) {
-        // Fullscreen: chrome da Watch some e o player ocupa a janela inteira
-        // (equivalente ao fullscreenElement + hideControls do PlayerView web).
-        if (fullscreen) {
-            key(contentId, activeEp?.id ?: episodeId) {
-                PlayerScreen(
-                    contentId = contentId,
-                    episodeId = activeEp?.id ?: episodeId,
-                    onClose = onClose,
-                    onTimeUpdate = countView,
-                    offline = offline,
-                    fullscreen = true,
-                    onToggleFullscreen = { fullscreen = false },
-                    onRateLimited = { message, plans -> rateLimit = message to plans },
-                    onSessionReplaced = { message -> sessionReplaced = message },
-                    onNextEpisode = if (isEpisodic && activeEp != null) {
-                        {
-                            run {
-                                val seasons = detail?.seasons ?: return@run
-                                val all = seasons.flatMap { it.episodes }
-                                val idx = all.indexOfFirst { it.id == activeEp?.id }
-                                if (idx in 0 until all.lastIndex) {
-                                    val next = all[idx + 1]
-                                    activeEp = next
-                                    val si = seasons.indexOfFirst { s -> s.episodes.any { it.id == next.id } }
-                                    if (si >= 0) activeSeason = si
-                                    lastSaveAt = 0L; lastPct = -1
-                                }
-                            }
-                        }
-                    } else null
-                )
-            }
-        } else Column(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(if (fullscreen) Color.Black else Px.BgDark)) {
+        Column(Modifier.fillMaxSize()) {
 
-            // ── Voltar (btn-ghost btn-sm do topo da página) ────────────────
-            Row(
-                Modifier.clickable(onClick = onClose).padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = null, tint = Px.TextLight, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(t.t("common.back"), color = Px.TextLight, fontSize = 14.sp)
+            // ── Voltar (btn-ghost btn-sm do topo da página) — só em retrato ──
+            if (!fullscreen) {
+                Row(
+                    Modifier.clickable(onClick = onClose).padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = null, tint = Px.TextLight, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(t.t("common.back"), color = Px.TextLight, fontSize = 14.sp)
+                }
             }
 
-            // ── Player-wrap 16:9 — camada de reprodução EXISTENTE ──────────
+            // ── Player-wrap: 16:9 em retrato, janela inteira em paisagem ──────
+            // key por episódio: troca manual/auto-next remonta o PlayerScreen,
+            // disparando onDispose → exoPlayer.release() do anterior (1 player vivo).
+            // Em NENHUM caso a rotação/ecrã inteiro altera a key → sem reinício.
             Box(
-                if (fullscreen) Modifier.fillMaxSize().background(Color.Black)
+                if (fullscreen) Modifier.weight(1f).fillMaxWidth().background(Color.Black)
                 else Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)
             ) {
-                // key por episódio: troca manual/auto-next remonta o PlayerScreen,
-                // disparando onDispose → exoPlayer.release() do anterior (1 player vivo).
                 key(contentId, activeEp?.id ?: episodeId) {
-                        PlayerScreen(
-                            contentId = contentId,
-                            episodeId = activeEp?.id ?: episodeId,
+                    PlayerScreen(
+                        contentId = contentId,
+                        episodeId = activeEp?.id ?: episodeId,
                         onClose = onClose,
                         offline = offline,
                         onTimeUpdate = { curSec, durSec ->
@@ -323,7 +304,7 @@ fun WatchScreen(
                             }
                         },
                         fullscreen = fullscreen,
-                        onToggleFullscreen = { fullscreen = !fullscreen },
+                        onToggleFullscreen = { fsS.toggle() },
                         onRateLimited = { message, plans -> rateLimit = message to plans },
                         onSessionReplaced = { message -> sessionReplaced = message },
                         onNextEpisode = if (isEpisodic && activeEp != null) {
@@ -338,7 +319,7 @@ fun WatchScreen(
                                         activeEp = next
                                         val si = seasons.indexOfFirst { s -> s.episodes.any { it.id == next.id } }
                                         if (si >= 0) activeSeason = si
-                                        lastSaveAt = 0L; lastPct = -1 // reset por troca de episódio (useEffect [activeEp?.id])
+                                        lastSaveAt = 0L; lastPct = -1 // reset por troca de episódio
                                     }
                                 }
                             }
@@ -347,12 +328,10 @@ fun WatchScreen(
                 }
             }
 
-            if (loading) {
-                Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
-                    PxLoadingRing()
-                }
-            }
+            // Skeleton da página (nada de spinner) enquanto o conteúdo carrega.
+            if (!fullscreen && loading) PxWatchDetailsSkeleton()
 
+            if (!fullscreen)
             detail?.let { d ->
                 Column(Modifier.padding(horizontal = 16.dp)) {
                     // ── Título + badges ────────────────────────────────────
@@ -361,10 +340,11 @@ fun WatchScreen(
                             append(d.displayTitle)
                             activeEp?.let { e -> append(" · E${e.number ?: ""}: ${e.title ?: ""}") }
                         },
+                        // Mesmo tamanho da descrição (13sp) — pedido explícito.
                         fontFamily = Montserrat,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 19.2.sp,
-                        letterSpacing = (-0.384).sp,           // -0.02em
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
                         color = Px.TextLight,
                     )
                     Spacer(Modifier.height(6.dp))
@@ -757,7 +737,6 @@ private fun EpisodeRow(ep: Episode, playing: Boolean, onClick: () -> Unit) {
 /** `.recommend-card`: miniatura 120×68 (16:9), título 2 linhas, tipo traduzido + ano. */
 @Composable
 private fun RecommendCard(item: ContentItem, onClick: () -> Unit) {
-    val t = LocalTranslator.current
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).pxTap(onClick = onClick).padding(horizontal = 4.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -780,9 +759,6 @@ private fun RecommendCard(item: ContentItem, onClick: () -> Unit) {
                 modifier = Modifier.padding(bottom = 4.dp)
             )
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                item.type?.let { ty ->
-                    Text(t.t("catalog.$ty").takeIf { it != "catalog.$ty" } ?: ty, fontSize = 11.2.sp, color = Px.TextMuted)
-                }
                 item.year?.let { Text(it.toString(), fontSize = 11.2.sp, color = Px.TextMuted) }
             }
         }

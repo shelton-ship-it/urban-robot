@@ -43,8 +43,16 @@ class LanguageManager(private val context: Context) {
 }
 
 /**
- * O backend do catálogo só serve conteúdo em pt/en (SUPPORTED_LANGUAGES em
- * lib/geoip.js) — 'es' da UI cai em 'en', exactamente como contentLang()
- * em lib/api.ts.
+ * Idioma dos METADADOS (título/descrição) pedidos ao backend.
+ *
+ * Todo o conteúdo é gravado em PORTUGUÊS no upload (não se usa en/es para
+ * metadados). O backend faz `COALESCE(tradução_no_idioma, tradução_en)`: se
+ * pedirmos "en" (ou deixarmos o servidor adivinhar pelo IP/cabeçalhos) não há
+ * tradução nem fallback e os metadados vêm vazios. Por isso o catálogo, a
+ * pesquisa, a Watch e a Minha Coleção pedem SEMPRE "pt". O idioma da INTERFACE
+ * (pt/en/es) continua a ser independente — só afecta os textos da app.
  */
-fun contentLangFor(uiLangCode: String): String = if (uiLangCode == "pt") "pt" else "en"
+const val CONTENT_LANG = "pt"
+
+@Suppress("UNUSED_PARAMETER")
+fun contentLangFor(uiLangCode: String): String = CONTENT_LANG

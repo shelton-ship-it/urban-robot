@@ -1,6 +1,9 @@
 package io.pixgo.app
 
 import android.app.Application
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.decode.SvgDecoder
 import io.pixgo.app.data.auth.AuthRepository
 import io.pixgo.app.data.catalog.CatalogRepository
 import io.pixgo.app.data.channels.ChannelsRepository
@@ -14,7 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-class PixGoApp : Application() {
+class PixGoApp : Application(), ImageLoaderFactory {
     lateinit var authRepository: AuthRepository
         private set
     lateinit var catalogRepository: CatalogRepository
@@ -34,6 +37,17 @@ class PixGoApp : Application() {
 
     /** Escopo de app para escritas locais rápidas chamadas a partir da UI (ex.: gate de idioma). */
     val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * ImageLoader global do Coil com os MESMOS timeouts generosos do resto da app.
+     * O Coil usa por defeito um OkHttp com 10 s: em rede lenta, posters/logos
+     * falhavam e ficavam em branco, enquanto o <img> do web simplesmente esperava.
+     */
+    override fun newImageLoader(): ImageLoader =
+        ImageLoader.Builder(this)
+            .okHttpClient(io.pixgo.app.data.network.NetworkModule.plainHttpClient())
+            .components { add(SvgDecoder.Factory()) }
+            .build()
 
     override fun onCreate() {
         super.onCreate()

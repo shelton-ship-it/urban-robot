@@ -5,6 +5,8 @@
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <!-- Spinner nativo do player (buffering) em branco, como o padrão do Media3/YouTube. -->
+        <item name="android:colorAccent">#FFFFFF</item>
         <!-- Equivalente ao viewport-fit=cover de app/layout.tsx: desenha sob o recorte (notch). -->
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>

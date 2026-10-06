@@ -135,6 +135,18 @@ fun AccountScreen(
                     "profiles" -> ProfilesTab(authRepository, state.profiles, state.plan, scope, toast)
                     else -> HelpTab(contactRepository, scope, toast, onOpenCopyright)
                 }
+                // Reexibir o assistente Pixel (ocultado ao arrastar o ícone para o X).
+                val aiHidden by io.pixgo.app.data.prefs.UiPrefs.aiHidden.collectAsStateWithLifecycle()
+                if (aiHidden) {
+                    val ctxAi = androidx.compose.ui.platform.LocalContext.current
+                    PxButton(
+                        text = "Mostrar assistente Pixel",
+                        onClick = { io.pixgo.app.data.prefs.UiPrefs.setAiHidden(ctxAi, false) },
+                        variant = io.pixgo.app.ui.common.PxBtnVariant.Secondary,
+                        size = io.pixgo.app.ui.common.PxBtnSize.Sm,
+                        modifier = Modifier.padding(top = 18.dp),
+                    )
+                }
             }
         }
         SnackbarHost(snack, Modifier.align(Alignment.BottomCenter))

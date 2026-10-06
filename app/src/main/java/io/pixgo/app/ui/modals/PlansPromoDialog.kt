@@ -19,6 +19,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import io.pixgo.app.ui.common.DialogImmersive
 import io.pixgo.app.data.model.PaymentPlan
 import io.pixgo.app.ui.common.PxBtnSize
 import io.pixgo.app.ui.common.PxBtnVariant
@@ -43,9 +45,11 @@ fun PlansPromoDialog(
     val featured = paid.firstOrNull { it.billingCycle == "monthly" } ?: paid.firstOrNull()
     val others = paid.filter { it.id != featured?.id }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        DialogImmersive()
         Column(
             Modifier
+                .padding(horizontal = 20.dp)
                 .widthIn(max = 480.dp)
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(14.dp))
@@ -94,9 +98,11 @@ fun PlansPromoDialog(
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                PxButton("Ver planos", onClick = onSeePlans)
-                PxButton("Continuar no grátis", onClick = onDismiss, variant = PxBtnVariant.Ghost, size = PxBtnSize.Sm)
+            // Botões EMPILHADOS a toda a largura: antes estavam lado a lado numa Row sem
+            // pesos e "Continuar no grátis" era cortado para "Continuar no".
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                PxButton("Ver planos", onClick = onSeePlans, modifier = Modifier.fillMaxWidth())
+                PxButton("Continuar no grátis", onClick = onDismiss, variant = PxBtnVariant.Ghost, size = PxBtnSize.Sm, modifier = Modifier.fillMaxWidth())
             }
         }
     }

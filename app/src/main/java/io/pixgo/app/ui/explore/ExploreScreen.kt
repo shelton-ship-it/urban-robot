@@ -375,6 +375,7 @@ private fun CatalogCard(
         type = item.type,
         rating = item.displayRating,
         wide = wide,
+        showTypeBadge = true,
         modifier = Modifier.fillMaxWidth(),
         onClick = { onOpenContent(item.id) },
         // Botão "+" / "✓": igual em TODOS os cards (ver MyListUi).

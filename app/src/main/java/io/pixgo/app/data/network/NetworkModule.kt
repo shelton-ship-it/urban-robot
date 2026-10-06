@@ -6,6 +6,8 @@ import kotlinx.coroutines.runBlocking
 import java.io.File
 import kotlinx.serialization.json.Json
 import okhttp3.Cache
+import okhttp3.ConnectionPool
+import java.util.concurrent.TimeUnit
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -27,6 +29,43 @@ object Hosts {
     /** Fallback literal do próprio código (UPLOAD_BASE em lib/api.ts) — não inventado. */
     const val COPYRIGHT = "https://copyright.pixgo.qzz.io"
 }
+
+/**
+ * TIMEOUTS CENTRALIZADOS — alinhados com o frontend_web.
+ *
+ * No web, NENHUMA chamada de API/página tem timeout próprio: authedFetch/fetch()
+ * esperam pelo que o navegador esperar (não há AbortSignal em lib/api.ts,
+ * store/auth.ts, legal, downloads, channels-source…). Os ÚNICOS timeouts do
+ * frontend são: player hls.js/BinLoader 20 s TOTAIS (frag/manifest/level),
+ * VAST 4 s, anúncio 30 s e sonda de adblock 2,5 s.
+ *
+ * O OkHttp, por defeito, corta aos 10 s de silêncio (connect/read/write) — em
+ * rede lenta ou com servidor "frio" isso dava erro/spinner/lista vazia em
+ * pedidos que no web simplesmente demoravam e funcionavam (falsos positivos).
+ * Por isso, para tudo o que NÃO é player:
+ *  - connect 30 s (3G/2G com DNS+TLS lentos);
+ *  - read/write 60 s de INATIVIDADE (mede silêncio entre bytes — um download
+ *    ou JSON grande a andar devagar NÃO é cortado);
+ *  - SEM timeout total (callTimeout = 0), tal como o fetch() do navegador.
+ * O player continua com 20 s TOTAIS (ver [playerHttp]), igual ao web.
+ */
+object NetTimeouts {
+    const val CONNECT_S = 30L
+    const val READ_S = 60L
+    const val WRITE_S = 60L
+
+    /** Player: igual ao hls.js (frag/manifest/levelLoadingTimeOut e BinLoader). */
+    const val PLAYER_TOTAL_S = 20L
+    const val PLAYER_CONNECT_S = 15L
+}
+
+/** Aplica os timeouts "estilo fetch do navegador" (generosos, sem total). */
+fun OkHttpClient.Builder.webLikeTimeouts(): OkHttpClient.Builder = this
+    .connectTimeout(NetTimeouts.CONNECT_S, TimeUnit.SECONDS)
+    .readTimeout(NetTimeouts.READ_S, TimeUnit.SECONDS)
+    .writeTimeout(NetTimeouts.WRITE_S, TimeUnit.SECONDS)
+    .callTimeout(0, TimeUnit.MILLISECONDS)
+    .retryOnConnectionFailure(true)
 
 object NetworkModule {
 
@@ -84,6 +123,7 @@ object NetworkModule {
             val httpCache = Cache(File(context.applicationContext.cacheDir, "http_cache"), 20L * 1024 * 1024)
             val client = OkHttpClient.Builder()
                 .cache(httpCache)
+                .webLikeTimeouts()
                 .cookieJar(jar)
                 .addInterceptor(authInterceptor(tokenManager))
                 .addInterceptor(logging)
@@ -111,6 +151,7 @@ object NetworkModule {
         synchronized(this) {
             contactClient?.let { return it }
             val client = OkHttpClient.Builder()
+                .webLikeTimeouts()
                 .addInterceptor(authInterceptor(tokenManager))
                 .build()
             contactClient = client
@@ -153,18 +194,57 @@ object NetworkModule {
     fun stream(context: Context, tokenManager: TokenManager): StreamApi =
         retrofit(Hosts.PIXEL_SERVICE, okHttp(context, tokenManager)).create(StreamApi::class.java)
 
+    @Volatile private var playerClient: OkHttpClient? = null
+
+    /**
+     * Cliente do PLAYER (segmentos .bin/.m3u8 do CDN). Equivalente às opções de
+     * rede do hls.js do frontend (fragLoadingTimeOut/manifestLoadingTimeOut 20 s,
+     * fragLoadingMaxRetry 4):
+     *  - timeout TOTAL de 20 s por pedido (callTimeout) + 20 s de inatividade;
+     *  - retryOnConnectionFailure + pool de ligações HTTP/2 reutilizadas (menos
+     *    handshakes TLS entre segmentos consecutivos);
+     *  - cache em disco de 64 MB: os segmentos do jsDelivr são imutáveis
+     *    (Cache-Control longo), por isso recuar no vídeo / rever não volta a
+     *    descarregar. Segue sem Authorization nem cookies (fetch bruto do worker).
+     */
+    fun playerHttp(context: Context): OkHttpClient {
+        playerClient?.let { return it }
+        synchronized(this) {
+            playerClient?.let { return it }
+            val cache = Cache(File(context.applicationContext.cacheDir, "player_http_cache"), 64L * 1024 * 1024)
+            val client = OkHttpClient.Builder()
+                .cache(cache)
+                .connectTimeout(NetTimeouts.PLAYER_CONNECT_S, TimeUnit.SECONDS)
+                .readTimeout(NetTimeouts.PLAYER_TOTAL_S, TimeUnit.SECONDS)
+                .writeTimeout(NetTimeouts.PLAYER_CONNECT_S, TimeUnit.SECONDS)
+                // TIMEOUT TOTAL por pedido (conexão + headers + corpo inteiro): é o
+                // equivalente exato do setTimeout(20s) do BinLoader e dos
+                // frag/manifest/levelLoadingTimeOut: 20_000 do hls.js. O readTimeout
+                // acima só mede inatividade entre bytes — um segmento a pingar nunca
+                // estourava e o player ficava "encravado". Cada retry recomeça o relógio.
+                .callTimeout(NetTimeouts.PLAYER_TOTAL_S, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))
+                .build()
+            playerClient = client
+            return client
+        }
+    }
+
     @Volatile private var plainClient: OkHttpClient? = null
 
     /**
      * Cliente SEM interceptor de auth nem cookies — para buscar os
      * segmentos .bin/.m3u8 do CDN (jsDelivr), igual ao fetch() bruto do
      * decrypt.worker.ts original (sem Authorization, sem credentials).
+     * Também usado por: copyright público, downloads do CDN, playlist de canais e
+     * imagens (Coil) — tudo `fetch`/`<img>` sem timeout no web.
      */
     fun plainHttpClient(): OkHttpClient {
         plainClient?.let { return it }
         synchronized(this) {
             plainClient?.let { return it }
-            val client = OkHttpClient.Builder().build()
+            val client = OkHttpClient.Builder().webLikeTimeouts().build()
             plainClient = client
             return client
         }

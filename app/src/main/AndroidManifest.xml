@@ -10,10 +10,21 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.PixGo">
 
+        <!--
+            configChanges: a causa-raiz dos "reloads" ao virar o ecrã. Sem isto o
+            Android DESTRÓI e RECRIA a Activity em cada rotação (e ao mudar tema
+            escuro/claro, tamanho de letra, teclado físico, etc.): o ExoPlayer era
+            libertado, o vídeo recomeçava, os modais voltavam a abrir e o botão
+            Voltar saía da app. Declarando estas mudanças, a Activity (e portanto
+            toda a composição Compose + o ExoPlayer) SOBREVIVE; o Compose recebe a
+            nova Configuration e só re-dimensiona o layout — tal como o YouTube.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale|colorMode"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

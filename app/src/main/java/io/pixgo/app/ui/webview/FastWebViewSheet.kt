@@ -113,7 +113,11 @@ import kotlinx.coroutines.delay
  *  - só em debug: console.log da página e navegações vão para o logcat
  *    (tag PixGoCheckout) e a WebView fica visível em chrome://inspect.
  */
-private const val LOAD_TIMEOUT_MS = 25_000L
+// Falha só se a página ficar SEM progresso durante este tempo (inatividade), nunca por
+// demorar no total: em rede lenta a página continua a carregar e o web (navegador) não
+// impõe limite. Teto absoluto de segurança para nunca ficar em spinner eterno.
+private const val LOAD_IDLE_TIMEOUT_MS = 45_000L
+private const val LOAD_HARD_CAP_MS = 180_000L
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -146,10 +150,20 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit) {
         }
     }
 
-    // Sem resposta em LOAD_TIMEOUT_MS => estado de erro com retry (nunca spinner eterno).
+    // Sem progresso por LOAD_IDLE_TIMEOUT_MS => estado de erro com retry (nunca spinner eterno).
     LaunchedEffect(attempt) {
-        delay(LOAD_TIMEOUT_MS)
-        if (!pageReady) failed = true
+        var lastProgress = progress
+        var idleMs = 0L
+        var totalMs = 0L
+        while (!pageReady && !failed) {
+            delay(1_000L)
+            totalMs += 1_000L
+            if (progress != lastProgress) { lastProgress = progress; idleMs = 0L } else idleMs += 1_000L
+            if (idleMs >= LOAD_IDLE_TIMEOUT_MS || totalMs >= LOAD_HARD_CAP_MS) {
+                if (!pageReady) failed = true
+                break
+            }
+        }
     }
 
     DisposableEffect(Unit) {

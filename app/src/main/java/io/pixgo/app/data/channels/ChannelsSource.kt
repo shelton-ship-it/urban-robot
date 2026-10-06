@@ -49,7 +49,9 @@ object ChannelsSource {
     private const val CACHE_TTL_MS = 22 * 60 * 60 * 1000L
     private const val ITEMS_LIMIT = 24
 
-    private val client = OkHttpClient()
+    // Mesmo `fetch(PLAYLIST_URL)` sem timeout do web (channels-source.ts): cliente
+    // com timeouts generosos em vez dos 10 s do OkHttp() padrão.
+    private val client: OkHttpClient by lazy { io.pixgo.app.data.network.NetworkModule.plainHttpClient() }
     private val mutex = Mutex()
     private var cache: List<RawChannel>? = null
     private var cacheTime = 0L

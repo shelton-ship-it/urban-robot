@@ -48,6 +48,7 @@ fun DisclaimerDialog(
         onDismissRequest = { },
         properties = DialogProperties(dismissOnClickOutside = false, dismissOnBackPress = false),
     ) {
+        io.pixgo.app.ui.common.DialogImmersive()
         Column(
             Modifier
                 .fillMaxWidth()
@@ -158,6 +159,7 @@ fun LanguageChoiceDialog(
         onDismissRequest = { },
         properties = DialogProperties(dismissOnClickOutside = false, dismissOnBackPress = false),
     ) {
+        io.pixgo.app.ui.common.DialogImmersive()
         Column(
             Modifier
                 .fillMaxWidth()
@@ -246,6 +248,7 @@ fun PlansNoticeDialog(onDismiss: () -> Unit) {
         onDismissRequest = { },
         properties = DialogProperties(dismissOnClickOutside = false, dismissOnBackPress = false),
     ) {
+        io.pixgo.app.ui.common.DialogImmersive()
         Column(
             Modifier
                 .fillMaxWidth()

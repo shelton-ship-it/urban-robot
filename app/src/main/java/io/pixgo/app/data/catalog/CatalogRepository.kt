@@ -6,7 +6,10 @@ import io.pixgo.app.data.auth.TokenManager
 import io.pixgo.app.data.model.ContentItem
 import io.pixgo.app.data.model.ContentDetail
 import io.pixgo.app.data.model.ContinueItem
+import io.pixgo.app.data.model.MyListContent
 import io.pixgo.app.data.model.MyListEntry
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import io.pixgo.app.data.network.MyListMutationBody
 import io.pixgo.app.data.model.ProgressUpdateBody
 import io.pixgo.app.data.model.ViewRegisterResponse
@@ -240,11 +243,44 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
         return SearchPage(body.results, body.pagination?.total ?: 0)
     }
 
-    /** Espelha app/main/mylist/page.tsx — profileId em camelCase, não profile_id. */
+    /**
+     * Espelha app/main/mylist/page.tsx — profileId em camelCase, não profile_id.
+     *
+     * BUG CORRIGIDO ("minha coleção envia lang errado, metadados não aparecem"):
+     * GET /api/mylist não recebia `lang` e o backend usa `req.language`
+     * (detectado por IP/cookie, tipicamente "en"). Como todo o conteúdo é gravado
+     * em PT, não havia tradução EN nem fallback → título/poster vinham nulos.
+     *  1. Agora envia sempre `lang=pt` (e o patch opcional de routes/mylist.js passa
+     *     a respeitá-lo);
+     *  2. COMPATÍVEL com o backend atual (sem deploy): qualquer entrada que ainda
+     *     venha sem título é completada por GET /api/content/:id?lang=pt (cache de
+     *     3 min partilhado com a Watch), em paralelo.
+     */
     suspend fun myList(activeProfileId: String): List<MyListEntry> {
-        val resp = retryOn401 { api.myList(mapOf("profileId" to activeProfileId, "limit" to "100")) }
+        val resp = retryOn401 {
+            api.myList(mapOf("profileId" to activeProfileId, "limit" to "100", "lang" to io.pixgo.app.data.i18n.CONTENT_LANG))
+        }
         if (!resp.isSuccessful) return emptyList()
-        return resp.body()?.items ?: emptyList()
+        val entries = resp.body()?.items ?: return emptyList()
+        return kotlinx.coroutines.coroutineScope {
+            entries.map { e ->
+                async {
+                    val c = e.content
+                    if (c != null && !c.title.isNullOrBlank() && !c.poster.isNullOrBlank()) return@async e
+                    val d = runCatching { content(e.contentId, io.pixgo.app.data.i18n.CONTENT_LANG, null) }.getOrNull()
+                        ?: return@async e
+                    e.copy(
+                        content = MyListContent(
+                            id = e.contentId,
+                            title = c?.title?.takeIf { it.isNotBlank() } ?: d.displayTitle,
+                            type = c?.type ?: d.type,
+                            poster = c?.poster?.takeIf { it.isNotBlank() } ?: d.displayPoster,
+                            year = c?.year ?: d.year,
+                        )
+                    )
+                }
+            }.awaitAll()
+        }
     }
 
     suspend fun addToMyList(profileId: String, contentId: String): Boolean {

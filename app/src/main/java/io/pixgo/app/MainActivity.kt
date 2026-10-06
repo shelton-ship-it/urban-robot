@@ -2,6 +2,7 @@ package io.pixgo.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -50,6 +51,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // FULLSCREEN NATIVO: edge-to-edge + modo imersivo. Sem Navigation Bar a fazer de footer.
         window.applyImmersive()
+        io.pixgo.app.data.prefs.UiPrefs.init(this)
         val app = application as PixGoApp
         setContent {
             PixGoTheme {
@@ -61,9 +63,8 @@ class MainActivity : ComponentActivity() {
                 // disponível no header, sem nunca bloquear a entrada.
                 val translator = remember(langCode) { Translator.create(ctx, langCode) }
                 CompositionLocalProvider(LocalTranslator provides translator) {
-                    val nav = rememberNavController()
                     val authState by app.authRepository.state.collectAsStateWithLifecycle()
-                    PixGoNavHost(nav, authState, app)
+                    PixGoRoot(authState, app)
                 }
             }
         }
@@ -76,29 +77,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * Raiz da app: sem token (após hidratar) -> login; com token -> home/shell.
+ *
+ * Antes era um NavHost de 2 destinos com `startDestination` calculado a partir do
+ * estado de auth + um LaunchedEffect a chamar navigate(). Isso (1) mostrava a
+ * Home por instantes antes de ir para o Login, (2) deixava uma pilha de
+ * navegação em que o botão Voltar SAÍA DA APP ou voltava ao Login, e (3) ao
+ * recompor reiniciava o destino. Agora é uma escolha directa e estável: a
+ * navegação interna (HomeShell) é própria e o Voltar é tratado lá.
+ */
 @Composable
-fun PixGoNavHost(nav: NavHostController, authState: AuthState, app: PixGoApp) {
-    // Réplica de MainLayout.tsx: sem token (após hidratar) -> login;
-    // com token -> home/shell.
-    val startDestination = if (authState.hydrated && authState.token == null) Dest.Login.route else Dest.Home.route
-
-    NavHost(nav, startDestination = startDestination) {
-        composable(Dest.Login.route) {
-            LoginScreen()
-        }
-        composable(Dest.Home.route) {
-            HomeShell(authState, app)
-        }
-    }
-
-    // Redireciona automaticamente quando o estado de auth muda, tal como
-    // o `if (hydrated && !token) router.replace(...)` de main/layout.tsx.
-    LaunchedEffect(authState.hydrated, authState.token) {
-        if (authState.hydrated && authState.token == null && nav.currentDestination?.route != Dest.Login.route) {
-            nav.navigate(Dest.Login.route)
-        } else if (authState.token != null && nav.currentDestination?.route == Dest.Login.route) {
-            nav.navigate(Dest.Home.route)
-        }
+fun PixGoRoot(authState: AuthState, app: PixGoApp) {
+    when {
+        // Ainda a ler o token do disco: fundo escuro (sem piscar Login/Home).
+        !authState.hydrated -> Box(Modifier.fillMaxSize().background(Px.BgDark))
+        authState.token == null -> LoginScreen()
+        else -> HomeShell(authState, app)
     }
 }
 
@@ -129,13 +124,13 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
         mutableStateOf<Pair<String, String?>?>(null)
     }
     var current by navSaved
-    var searchQuery by remember { mutableStateOf("") }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
     val langCode by app.languageManager.languageCode.collectAsStateWithLifecycle(initialValue = "pt")
     // Estado da rota /main/plans (tela nativa PlansScreen): "highlight" é o
     // ?highlight= do RateLimitModal/ChannelsRateLimit do web; pendingCheckout
     // guarda a URL de checkout que PlansScreen pediu para abrir (handleSubscribe
     // → HUB_CHECKOUT_URL?plan=&return_to=), consumida pelo FastWebViewSheet.
-    var plansHighlight by remember { mutableStateOf<String?>(null) }
+    var plansHighlight by rememberSaveable { mutableStateOf<String?>(null) }
     fun openPlans(highlight: String? = null) {
         plansHighlight = highlight
         current = MainDest.PLANS
@@ -143,15 +138,30 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
     // URL do checkout do hub aberta a partir da tela Plans ("Assinar" →
     // HUB_CHECKOUT_URL?plan=&return_to=, exactamente como handleSubscribe em
     // plans/page.tsx). null = nenhuma sheet de checkout aberta.
-    var checkoutUrl by remember { mutableStateOf<String?>(null) }
+    var checkoutUrl by rememberSaveable { mutableStateOf<String?>(null) }
     // O aviso jurídico dos planos nunca é memorizado no web (PlansNoticeModal):
     // abre SEMPRE que se entra em /main/plans (useState(true) na página) e
     // volta a abrir antes de cada checkout. `plansNoticeOpen` cobre a entrada
     // no ecrã; `plansNoticeShown` o fluxo de checkout (comportamento anterior).
-    var plansNoticeShown by remember { mutableStateOf(false) }
-    var plansNoticeOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(checkoutUrl) { if (checkoutUrl != null) plansNoticeShown = false }
-    LaunchedEffect(current) { plansNoticeOpen = current == MainDest.PLANS }
+    var plansNoticeShown by rememberSaveable { mutableStateOf(false) }
+    var plansNoticeOpen by rememberSaveable { mutableStateOf(false) }
+    // Só reage a MUDANÇAS reais de destino/checkout. Antes o LaunchedEffect corria
+    // também em cada (re)composição inicial — ao virar o ecrã o modal dos planos
+    // voltava a abrir em loop.
+    var lastDest by rememberSaveable { mutableStateOf(current) }
+    var lastCheckout by rememberSaveable { mutableStateOf(checkoutUrl) }
+    LaunchedEffect(checkoutUrl) {
+        if (checkoutUrl != lastCheckout) {
+            lastCheckout = checkoutUrl
+            if (checkoutUrl != null) plansNoticeShown = false
+        }
+    }
+    LaunchedEffect(current) {
+        if (current != lastDest) {
+            lastDest = current
+            plansNoticeOpen = current == MainDest.PLANS
+        }
+    }
     var watchContentId by watchSaved
     // Abertura de download concluído pela tela Downloads → Watch em modo
     // offline (PlayerScreen usa PlayerRepository.startLocal; sem rede).
@@ -166,28 +176,45 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
         }
     }
     // "Enviar conteúdo": no Android só abre o modal (envio é feito na plataforma web).
-    var showUploadWebOnly by remember { mutableStateOf(false) }
+    var showUploadWebOnly by rememberSaveable { mutableStateOf(false) }
     // Central de direitos autorais (/copyright, /copyright/response, /copyright/portal, /legal) em ecrã inteiro.
-    var showCopyright by remember { mutableStateOf(false) }
+    var showCopyright by rememberSaveable { mutableStateOf(false) }
     var watchingChannel by remember { mutableStateOf<io.pixgo.app.data.channels.ChannelListItem?>(null) }
     // DisclaimerGate real (Providers.tsx): com sessão ativa, o DisclaimerModal
     // aparece até aceitar; "Recusar" memoriza pixgo_disclaimer_dismissed.
-    var showDisclaimer by remember { mutableStateOf(false) }
+    var showDisclaimer by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(authState.hydrated, authState.token) {
+        // SessionFlags: depois de aceitar/recusar NÃO volta a abrir nesta sessão,
+        // mesmo que a composição seja recriada (era o "modal em loop").
         if (authState.hydrated && authState.token != null &&
+            !io.pixgo.app.data.prefs.SessionFlags.disclaimerHandled &&
             !app.authRepository.isDisclaimerDismissed()
         ) showDisclaimer = true
     }
     if (showDisclaimer) {
         io.pixgo.app.ui.modals.DisclaimerDialog(
-            onAccept = { showDisclaimer = false },
+            onAccept = {
+                io.pixgo.app.data.prefs.SessionFlags.disclaimerHandled = true
+                showDisclaimer = false
+            },
             onDismiss = {
+                io.pixgo.app.data.prefs.SessionFlags.disclaimerHandled = true
                 showDisclaimer = false
                 app.ioScope.launch { app.authRepository.setDisclaimerDismissed(true) }
             },
         )
     }
     val activeProfile = authState.profiles.find { it.id == authState.activeProfileId }
+
+    // VOLTAR do Android (todas as páginas): fora da Home, volta à Home em vez de
+    // SAIR da app. Só na Home (sem nada aberto por cima) o sistema fecha a app.
+    // Os overlays (Watch, Canal, Copyright, Checkout) e o menu lateral registam o
+    // seu próprio BackHandler mais abaixo na composição e, por isso, têm
+    // prioridade sobre este.
+    BackHandler(enabled = current != MainDest.HOME) {
+        searchQuery = ""
+        current = MainDest.HOME
+    }
     var snackbarText by remember { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 

@@ -85,6 +85,8 @@ fun ContentCardCell(
     inList: Boolean? = null,
     wide: Boolean = false,
     typeLabel: String? = null,
+    // Badge de tipo (Série/Anime/Filme...) só aparece no /catalog e nas Tendências (home).
+    showTypeBadge: Boolean = false,
     onAddToList: (() -> Unit)? = null,
     onShare: (() -> Unit)? = null
 ) {
@@ -185,7 +187,7 @@ fun ContentCardCell(
             }
 
             // Badge de tipo — t(`catalog.${type}`); bottom 12 se houver progress, senão 8
-            if (type != null) {
+            if (showTypeBadge && type != null) {
                 val label = typeLabel ?: t.t("catalog.$type").takeIf { it != "catalog.$type" } ?: type
                 Text(
                     text = label,

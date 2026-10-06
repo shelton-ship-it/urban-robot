@@ -8,18 +8,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -29,8 +22,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,19 +38,22 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import io.pixgo.app.data.model.UpsellPlan
 import io.pixgo.app.data.player.BinDecryptDataSource
 import io.pixgo.app.data.player.BinFormat
 import io.pixgo.app.data.player.HeartbeatEvent
+import io.pixgo.app.data.player.PlayerFactory
 import io.pixgo.app.data.player.PlayerRepository
 import io.pixgo.app.data.player.StreamHandshakeResult
+import io.pixgo.app.ui.common.PxButton
+import io.pixgo.app.ui.common.PxPlayerSkeleton
 import io.pixgo.app.ui.theme.Px
 import kotlinx.coroutines.delay
 
@@ -65,14 +63,25 @@ import kotlinx.coroutines.delay
  *  1. handshake() → GET .../stream (ECDH de "portão" + devolve
  *     master_url/drm_key_hex);
  *  2. ExoPlayer com HlsMediaSource usando BinDecryptDataSource — os
- *     .bin são decifrados on-the-fly, tudo o resto (m3u8) passa direto;
+ *     .bin são decifrados em streaming, tudo o resto (m3u8) passa direto;
  *  3. heartbeat a cada 120s enquanto reproduz, 409=sessão substituída
  *     (pausa + aviso), 429=tempo grátis esgotado (pausa + aviso).
  *
- * A Watch nativa liga-se a este player APENAS pelos callbacks opcionais
- * abaixo (defaults nulos = comportamento antigo intacto para Home/Canais):
- * posição/duração p/ progresso, 429/409 c/ message+plans reais, auto-next
- * e fullscreen controlado por quem o incorpora.
+ * CORREÇÕES desta versão:
+ *  - SPINNER: o PlayerView tinha o indicador de buffering desligado (default
+ *    SHOW_BUFFERING_NEVER) e só existia um spinner Compose que desaparecia
+ *    quando o handshake terminava — depois disso, em rede lenta, o vídeo
+ *    parecia "encravado". Agora o spinner NATIVO do player fica em
+ *    SHOW_BUFFERING_ALWAYS (aparece em QUALQUER buffering/rebuffer/seek) e
+ *    durante o handshake mostra-se um skeleton, não um spinner.
+ *  - ECRÃ INTEIRO: este composable é UM ÚNICO ponto na árvore — a Watch só
+ *    muda o tamanho do contentor (16:9 ↔ tudo). Antes eram dois PlayerScreen
+ *    diferentes (um por ramo do if), por isso entrar/sair do ecrã inteiro
+ *    destruía o ExoPlayer e recomeçava o vídeo.
+ *  - Callbacks (onTimeUpdate/onNextEpisode/...) lidos via rememberUpdatedState:
+ *    antes cada recomposição da Watch reiniciava o LaunchedEffect e o `delay`
+ *    de 5 s nunca chegava ao fim (progresso nunca guardado).
+ *  - Player configurado como o hls.js do frontend (ver PlayerFactory).
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -86,12 +95,9 @@ fun PlayerScreen(
     onRateLimited: ((message: String?, plans: List<UpsellPlan>) -> Unit)? = null,
     onSessionReplaced: ((message: String) -> Unit)? = null,
     onNextEpisode: (() -> Unit)? = null,
-    // Fullscreen controlado pela Watch (portrait 16:9 ↔ janela inteira).
-    // Default false preserva as chamadas existentes de Home/Canais.
+    // Estado de ecrã inteiro (derivado da orientação) — só decide o botão Voltar.
     fullscreen: Boolean = false,
-    // Sessão offline (download concluído): quando true, salta handshake/
-    // heartbeat remotos e reproduz init+segmentos locais pelo MESMO
-    // BinDecryptDataSource (default false = fluxo remoto intacto).
+    // Sessão offline (download concluído): salta handshake/heartbeat remotos.
     offline: Boolean = false,
     onToggleFullscreen: (() -> Unit)? = null
 ) {
@@ -100,7 +106,15 @@ fun PlayerScreen(
     val t = io.pixgo.app.data.i18n.LocalTranslator.current
     val repository = remember { PlayerRepository(context) }
 
+    val onTimeUpdateS by rememberUpdatedState(onTimeUpdate)
+    val onRateLimitedS by rememberUpdatedState(onRateLimited)
+    val onSessionReplacedS by rememberUpdatedState(onSessionReplaced)
+    val onNextEpisodeS by rememberUpdatedState(onNextEpisode)
+    val onToggleFullscreenS by rememberUpdatedState(onToggleFullscreen)
+    val onCloseS by rememberUpdatedState(onClose)
+
     var loading by remember { mutableStateOf(true) }
+    var attempt by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var sessionReplacedMessage by remember { mutableStateOf<String?>(null) }
     var freeTimeMessage by remember { mutableStateOf<String?>(null) }
@@ -112,25 +126,19 @@ fun PlayerScreen(
     val downloadStore = remember { io.pixgo.app.data.download.DownloadStore(context) }
     val exoPlayer = remember(contentId, episodeId) {
         val dataSourceFactory = BinDecryptDataSource.Factory(
-            httpClient = io.pixgo.app.data.network.NetworkModule.plainHttpClient(),
+            httpClient = io.pixgo.app.data.network.NetworkModule.playerHttp(context),
             keyProvider = { drmKey },
             // Ramo offline: pixgo-offline://{key}/init.bin|seg.bin?i=N →
-            // ficheiro cifrado em disco; a decifra chunk-v2 abaixo é idêntica.
+            // ficheiro cifrado em disco; a decifra chunk-v2 é idêntica.
             localResolver = { uri -> downloadStore.resolveLocal(uri) }
         )
-        val mediaSourceFactory = HlsMediaSource.Factory(dataSourceFactory)
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .build()
+        PlayerFactory.createVod(context, dataSourceFactory)
     }
 
-    LaunchedEffect(contentId, episodeId, offline) {
+    LaunchedEffect(contentId, episodeId, offline, attempt) {
         loading = true
         errorMessage = null
         if (offline) {
-            // Sessão offline: playlist sintética local + drm_key_hex do
-            // download concluído; handshake/heartbeat remotos são saltados
-            // (é o que isOfflineSession representa no repositório).
             if (repository.startLocal(contentId, episodeId)) {
                 drmKey = repository.offlineKey()
                 val url = repository.offlineStreamUrl
@@ -160,10 +168,10 @@ fun PlayerScreen(
             is StreamHandshakeResult.FreeTimeExhausted -> {
                 loading = false
                 // 429 real: message + plans do body do backend. Com callback
-                // da Watch, o modal nativo (RateLimitModal equivalente) é
-                // apresentado por ela; sem callback (Home/Canais), mantém-se
-                // exatamente o AlertDialog antigo — comportamento intacto.
-                if (onRateLimited != null) onRateLimited(result.message, result.plans)
+                // da Watch, o modal nativo é apresentado por ela; sem callback
+                // (Home/Canais) mantém-se o AlertDialog antigo.
+                val cb = onRateLimitedS
+                if (cb != null) cb(result.message, result.plans)
                 else freeTimeMessage = result.message ?: "Tempo grátis esgotado."
             }
             is StreamHandshakeResult.Error -> {
@@ -175,7 +183,7 @@ fun PlayerScreen(
 
     // Heartbeat — só corre enquanto isPlaying, tal como o listener
     // play/pause do original que liga/desliga o setInterval. Em sessões
-    // offline não há heartbeat remoto (sem streaming/licença remota).
+    // offline não há heartbeat remoto.
     LaunchedEffect(exoPlayer, offline) {
         if (offline) return@LaunchedEffect
         while (true) {
@@ -185,12 +193,13 @@ fun PlayerScreen(
             when (val event = repository.sendHeartbeat(contentId, positionSeconds)) {
                 is HeartbeatEvent.SessionReplaced -> {
                     exoPlayer.pause()
-                    if (onSessionReplaced != null) onSessionReplaced(event.message)
-                    else sessionReplacedMessage = event.message
+                    val cb = onSessionReplacedS
+                    if (cb != null) cb(event.message) else sessionReplacedMessage = event.message
                 }
                 is HeartbeatEvent.FreeTimeExhausted -> {
                     exoPlayer.pause()
-                    if (onRateLimited != null) onRateLimited(event.message, event.plans)
+                    val cb = onRateLimitedS
+                    if (cb != null) cb(event.message, event.plans)
                     else freeTimeMessage = event.message ?: "Tempo grátis esgotado."
                 }
                 HeartbeatEvent.Ok -> {}
@@ -199,28 +208,29 @@ fun PlayerScreen(
     }
 
     // onTimeUpdate: posição/duração reais a cada ~5s enquanto reproduz
-    // (equivalente ao listener 'timeupdate' do original); o throttle de
-    // 60s e o cálculo de percentual pertencem à Watch, não ao player.
-    LaunchedEffect(onTimeUpdate, exoPlayer) {
-        if (onTimeUpdate == null) return@LaunchedEffect
+    // (equivalente ao listener 'timeupdate' do original).
+    LaunchedEffect(exoPlayer) {
         while (true) {
             delay(5_000L)
+            val cb = onTimeUpdateS ?: continue
             if (!exoPlayer.isPlaying) continue
-            val durSec = (exoPlayer.duration / 1000).toInt()
+            val dur = exoPlayer.duration
+            if (dur == C.TIME_UNSET || dur <= 0L) continue
+            val durSec = (dur / 1000).toInt()
             val curSec = (exoPlayer.currentPosition / 1000).toInt()
-            if (durSec > 0 && curSec >= 0) onTimeUpdate(curSec, durSec)
+            if (durSec > 0 && curSec >= 0) cb(curSec, durSec)
         }
     }
 
-    // Auto-next (ShakaPlayer.tsx:770-783): no evento 'ended', se houver
-    // onNextEpisode mostra countdown de 5s com "Próximo episódio"/"Cancelar";
-    // ao zerar, dispara o próximo. Sem callback, nada acontece (Home/Canais).
+    // Auto-next (ShakaPlayer.tsx:770-783) + erros de reprodução com "Tentar novamente".
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_ENDED && onNextEpisode != null) {
-                    autoNextIn = 5
-                }
+                if (state == Player.STATE_ENDED && onNextEpisodeS != null) autoNextIn = 5
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                errorMessage = "Falha ao reproduzir o vídeo. Verifique a ligação."
             }
         }
         exoPlayer.addListener(listener)
@@ -235,7 +245,7 @@ fun PlayerScreen(
         }
         if (autoNextIn == 0) {
             autoNextIn = null
-            onNextEpisode?.invoke()
+            onNextEpisodeS?.invoke()
         }
     }
 
@@ -253,69 +263,82 @@ fun PlayerScreen(
     }
 
     // Modais de sessão/limite: exibidos apenas quando a Watch não assumiu o
-    // tratamento via callbacks (chamadas antigas Home/Canais/deep-link ficam
-    // com exatamente o comportamento anterior).
+    // tratamento via callbacks (Home/Canais/deep-link).
     sessionReplacedMessage?.let { msg ->
-        io.pixgo.app.ui.modals.SessionReplacedModal(message = msg, onClose = { sessionReplacedMessage = null; onClose() })
+        io.pixgo.app.ui.modals.SessionReplacedModal(message = msg, onClose = { sessionReplacedMessage = null; onCloseS() })
     }
 
     freeTimeMessage?.let { msg ->
         io.pixgo.app.ui.modals.RateLimitModal(
             plans = emptyList(), message = msg,
-            onClose = { freeTimeMessage = null; onClose() },
-            onUpgrade = { freeTimeMessage = null; onClose() },
+            onClose = { freeTimeMessage = null; onCloseS() },
+            onUpgrade = { freeTimeMessage = null; onCloseS() },
         )
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        if (drmKey != null) {
-            AndroidView(
-                factory = {
-                    PlayerView(it).apply {
-                        player = exoPlayer
-                        useController = true
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        // Controlos nativos sem anterior/seguinte; o ecrã inteiro é o
-                        // botão nativo da própria barra (não um botão solto sobre o vídeo).
-                        setShowNextButton(false)
-                        setShowPreviousButton(false)
-                    }
-                },
-                update = { pv ->
-                    val toggle = onToggleFullscreen
-                    if (toggle != null) pv.setFullscreenButtonClickListener { toggle() }
-                    else pv.setFullscreenButtonClickListener(null)
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-        }
+        // O PlayerView existe SEMPRE (mesmo durante o handshake): a superfície
+        // fica pronta e o spinner nativo de buffering funciona desde o 1.º frame.
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    player = exoPlayer
+                    useController = true
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    // Spinner PADRÃO do player em todo o buffering/rebuffer/seek.
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    // Controlos nativos sem anterior/seguinte; o ecrã inteiro é o
+                    // botão nativo da própria barra.
+                    setShowNextButton(false)
+                    setShowPreviousButton(false)
+                }
+            },
+            update = { pv ->
+                if (pv.player !== exoPlayer) pv.player = exoPlayer
+                if (onToggleFullscreenS != null) {
+                    pv.setFullscreenButtonClickListener { onToggleFullscreenS?.invoke() }
+                } else {
+                    pv.setFullscreenButtonClickListener(null)
+                }
+                syncFullscreenIcon(pv, fullscreen)
+            },
+            onRelease = { pv -> pv.player = null },
+            modifier = Modifier.fillMaxSize()
+        )
 
-        if (loading) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        }
+        // Handshake em curso: skeleton (não spinner).
+        if (loading && errorMessage == null) PxPlayerSkeleton()
 
-        errorMessage?.let {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(it, color = Color.White)
+        errorMessage?.let { msg ->
+            Column(
+                Modifier.fillMaxSize().background(Color(0xCC000000)).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(msg, color = Color.White, fontSize = 13.sp)
+                if (!offline) {
+                    PxButton(
+                        text = "Tentar novamente",
+                        onClick = { attempt++ },
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
             }
         }
 
-        // Player LIMPO (pedido explícito): sem "X" e sem o botão tipo "next" por cima do
-        // vídeo. Só resta o botão Voltar — e apenas em ecrã inteiro, onde a barra de
-        // voltar da página Watch não está visível. Sair do ecrã inteiro = voltar.
+        // Player LIMPO: sem "X" nem botão tipo "next" por cima do vídeo. Só o
+        // Voltar — e apenas em ecrã inteiro, onde a barra da Watch não aparece.
+        // Sair do ecrã inteiro = voltar a retrato (o BackHandler vive na Watch).
         if (fullscreen) {
-            androidx.activity.compose.BackHandler { onToggleFullscreen?.invoke() ?: onClose() }
             IconButton(
-                onClick = { onToggleFullscreen?.invoke() ?: onClose() },
+                onClick = { onToggleFullscreenS?.invoke() ?: onCloseS() },
                 modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
             ) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = "Voltar", tint = Color.White)
             }
         }
 
-        // Countdown auto-next — mesmo card do original (bottom 60 / right 16,
-        // fundo preto 0.9, borda rgba(229,9,20,.2), raio 12): número grande
-        // vermelho + botões "Próximo episódio"/"Cancelar".
+        // Countdown auto-next — mesmo card do original.
         autoNextIn?.let { n ->
             if (n > 0 && onNextEpisode != null) {
                 Row(
@@ -342,7 +365,7 @@ fun PlayerScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         TextButton(onClick = {
                             autoNextIn = null
-                            onNextEpisode()
+                            onNextEpisodeS?.invoke()
                         }) { Text(t.t("player.nextEpisode"), color = Px.PrimaryGlow) }
                         TextButton(onClick = { autoNextIn = null }) {
                             Text(t.t("common.cancel"))
@@ -354,3 +377,14 @@ fun PlayerScreen(
     }
 }
 
+/**
+ * Mantém o ícone do botão NATIVO (expandir/recolher) coerente com o estado real
+ * (a orientação pode mudar fisicamente, sem o botão ser tocado). Por reflexão:
+ * se esta versão do Media3 não expõe o método, é um no-op silencioso.
+ */
+@OptIn(UnstableApi::class)
+private fun syncFullscreenIcon(pv: PlayerView, fullscreen: Boolean) {
+    runCatching {
+        pv.javaClass.getMethod("setFullscreenButtonState", java.lang.Boolean.TYPE).invoke(pv, fullscreen)
+    }
+}

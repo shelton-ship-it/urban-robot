@@ -193,6 +193,7 @@ fun TrendingCarousel(
                             type = item.type,
                             rating = item.displayRating,
                             wide = true,
+                            showTypeBadge = true,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { onOpenContent(item.id) },
                             inList = myList?.isIn(item.id),

@@ -11,12 +11,25 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.draw.scale
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.pixgo.app.data.prefs.UiPrefs
+import kotlin.math.hypot
+import kotlin.math.roundToInt
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -73,9 +86,22 @@ fun BoxScope.PixelChatbot(
     markGreeted: suspend () -> Unit,
     send: suspend (String, List<ChatMessageDto>) -> String?,
 ) {
+    // Ícone oculto pelo utilizador (arrastado para o X): não compõe nada. Pode ser
+    // reexibido em Conta → "Mostrar assistente Pixel".
+    val hidden by UiPrefs.aiHidden.collectAsStateWithLifecycle()
+    if (hidden) return
+
     val t = LocalTranslator.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
+    // Arrasto (pressionar e segurar → mover → largar sobre o X).
+    var dragging by remember { mutableStateOf(false) }
+    var dragX by remember { mutableStateOf(0f) }
+    var dragY by remember { mutableStateOf(0f) }
+    var overTarget by remember { mutableStateOf(false) }
     var showGreeting by remember { mutableStateOf(false) }
     val messages = remember { mutableStateListOf<ChatMessageDto>() }
     var input by remember { mutableStateOf("") }
@@ -209,10 +235,57 @@ fun BoxScope.PixelChatbot(
         }
     }
 
-    // botão flutuante 54×54, bottom 22 right 22
+    // ── Alvo "X" transparente (como nos sites): só aparece durante o arrasto ──
+    val btn = 54f; val margin = 22f
+    if (dragging) {
+        val targetScale by animateFloatAsState(if (overTarget) 1.25f else 1f, label = "xScale")
+        Box(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = 36.dp)
+                .size(64.dp).scale(targetScale)
+                .clip(CircleShape)
+                .background(if (overTarget) Color(0x66E50914) else Color(0x33FFFFFF))
+                .border(1.5.dp, if (overTarget) Px.Primary else Color(0x66FFFFFF), CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Filled.Close, "Ocultar", Modifier.size(28.dp), tint = Color.White) }
+    }
+
+    // botão flutuante 54×54, bottom 22 right 22 — pressionar e SEGURAR para arrastar
     Box(
         Modifier.align(Alignment.BottomEnd).padding(end = 22.dp, bottom = 22.dp)
+            .offset { IntOffset(dragX.roundToInt(), dragY.roundToInt()) }
             .size(54.dp)
+            .pointerInput(Unit) {
+                // Posição do centro do botão em px (para testar a sobreposição ao X).
+                fun overX(): Boolean {
+                    val d = density.density
+                    val dm = ctx.resources.displayMetrics
+                    val cx = dm.widthPixels - (margin + btn / 2) * d + dragX
+                    val cy = dm.heightPixels - (margin + btn / 2) * d + dragY
+                    val tx = dm.widthPixels / 2f
+                    val ty = dm.heightPixels - (36f + 32f) * d
+                    return hypot(cx - tx, cy - ty) < 56f * d
+                }
+                detectDragGesturesAfterLongPress(
+                    onDragStart = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (open) open = false
+                        if (showGreeting) dismissGreeting()
+                        dragging = true
+                    },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        dragX += amount.x; dragY += amount.y
+                        overTarget = overX()
+                    },
+                    onDragEnd = {
+                        val drop = overX()
+                        dragging = false; overTarget = false
+                        dragX = 0f; dragY = 0f
+                        if (drop) UiPrefs.setAiHidden(ctx, true)
+                    },
+                    onDragCancel = { dragging = false; overTarget = false; dragX = 0f; dragY = 0f },
+                )
+            }
             .shadow(10.dp, CircleShape, ambientColor = Px.Primary, spotColor = Px.Primary)
             .clip(CircleShape).background(Px.Primary).pxTap { toggle() },
         contentAlignment = Alignment.Center,

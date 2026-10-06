@@ -110,7 +110,7 @@ fun MyListScreen(
                 )
             }
             when {
-                loading -> item(span = { GridItemSpan(maxLineSpan) }) { PxPageLoading() }
+                loading -> item(span = { GridItemSpan(maxLineSpan) }) { io.pixgo.app.ui.common.PxContentGridSkeleton(count = 12) }
                 items.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
                     PxEmptyState(
                         icon = Icons.Filled.Bookmark,

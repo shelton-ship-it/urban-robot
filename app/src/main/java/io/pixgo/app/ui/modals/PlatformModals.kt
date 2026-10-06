@@ -48,6 +48,7 @@ fun UploadWebOnlyDialog(onClose: () -> Unit) {
     val t = LocalTranslator.current
     val shape = RoundedCornerShape(14.dp)
     Dialog(onDismissRequest = onClose, properties = DialogProperties(dismissOnClickOutside = false)) {
+        io.pixgo.app.ui.common.DialogImmersive()
         Column(
             Modifier
                 .fillMaxWidth()
@@ -195,6 +196,7 @@ private fun ModalCard(maxWidth: Int, onBack: () -> Unit, content: @Composable ()
         onDismissRequest = onBack,
         properties = DialogProperties(dismissOnClickOutside = false),
     ) {
+        io.pixgo.app.ui.common.DialogImmersive()
         Box(
             Modifier
                 .fillMaxWidth()

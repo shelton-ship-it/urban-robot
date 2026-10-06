@@ -85,6 +85,8 @@ fun HomeScreen(
     var page by remember { mutableStateOf(1) }
     var hasMore by remember { mutableStateOf(true) }
     var loading by remember { mutableStateOf(true) }
+    // Skeleton FORÇADO nas Tendências até o pedido terminar (antes não aparecia nada).
+    var trendingLoading by remember { mutableStateOf(true) }
     var loadingMore by remember { mutableStateOf(false) }
     var reloadKey by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
@@ -93,6 +95,7 @@ fun HomeScreen(
     // Carga inicial — reinicia tudo quando o perfil activo / idioma muda.
     LaunchedEffect(activeProfileId, uiLang, reloadKey) {
         loading = true
+        trendingLoading = true
         page = 1
         hasMore = true
         trending = emptyList()
@@ -103,6 +106,7 @@ fun HomeScreen(
             launch {
                 trending = runCatching { catalogRepository.loadTrending(activeProfileId, contentLang) }
                     .getOrDefault(emptyList())
+                trendingLoading = false
             }
             val first = runCatching { catalogRepository.loadHomePage(1, activeProfileId, contentLang) }
                 .getOrDefault(emptyList())
@@ -136,7 +140,7 @@ fun HomeScreen(
     if (loading) {
         // <ContentGridSkeleton count={12} withHeader /> × 2
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(pagePadding())) {
-            PxContentGridSkeleton(count = 12, withHeader = true)
+            PxTrendingSkeleton()
             PxContentGridSkeleton(count = 12, withHeader = true)
         }
         return
@@ -145,7 +149,7 @@ fun HomeScreen(
     // Mini séries saem da grelha misturada (ficam só no carrossel).
     val gridItems = feed.filter { !it.isChannelSeries }
 
-    if (gridItems.isEmpty() && trending.isEmpty()) {
+    if (gridItems.isEmpty() && trending.isEmpty() && !trendingLoading) {
         // .empty-state { minHeight: '60vh' } centrado
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             PxEmptyState(
@@ -169,7 +173,11 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(spec.gap),
         modifier = Modifier.fillMaxSize()
     ) {
-        if (trending.isNotEmpty()) {
+        if (trendingLoading) {
+            item(span = { GridItemSpan(maxLineSpan) }, key = "trendingSkeleton") {
+                PxTrendingSkeleton(modifier = Modifier.padding(bottom = 0.dp))
+            }
+        } else if (trending.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }, key = "trending") {
                 TrendingCarousel(
                     items = trending, title = t.t("home.trending"), onOpenContent = onOpenContent, myList = myList,
@@ -196,6 +204,7 @@ fun HomeScreen(
                 year = item.year,
                 type = item.type,
                 rating = item.displayRating,
+                showTypeBadge = true,
                 onClick = { onOpenContent(item.id) },
                 inList = myList.isIn(item.id),
                 onAddToList = { myList.toggle(item.id) },
