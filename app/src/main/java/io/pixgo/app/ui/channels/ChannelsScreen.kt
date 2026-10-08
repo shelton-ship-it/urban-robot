@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImage
+import io.pixgo.app.data.network.runCatchingNonCancel
 import io.pixgo.app.data.channels.ChannelCategory
 import io.pixgo.app.data.channels.ChannelGateResult
 import io.pixgo.app.data.channels.ChannelListItem
@@ -126,6 +127,10 @@ fun ChannelsScreen(
     var pages by remember { mutableStateOf(1) }
     var grandTotal by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(true) }
+    // Falha REAL (playlist indisponível depois de muita paciência) ≠ "nenhum canal".
+    var failed by remember { mutableStateOf(false) }
+    var reloadKey by remember { mutableStateOf(0) }
+    val loadSeq = remember { java.util.concurrent.atomic.AtomicInteger(0) }
     var searching by remember { mutableStateOf(false) }
     var checkingId by remember { mutableStateOf<String?>(null) }
     // channels/page.tsx: 429 do gate → RateLimitModal com err.data.plans
@@ -136,38 +141,57 @@ fun ChannelsScreen(
     val defaultFilter = animeOnly && query.isBlank() && selectedCategory == null
     val effectiveCategory = if (defaultFilter) animeCategory?.slug else selectedCategory
 
-    LaunchedEffect(Unit) {
-        categories = runCatching { repository.categories() }.getOrDefault(emptyList())
-        categoriesLoaded = true
+    // A playlist (jsDelivr) é buscada com PACIÊNCIA (ver ChannelsSource.fetchText). Se mesmo assim
+    // falhar, categoriesLoaded fica FALSE e mostra-se erro + "Tentar novamente" — antes ficava
+    // true com categorias vazias e a lista carregava sem filtro / vazia ("sem canais").
+    LaunchedEffect(reloadKey) {
+        categoriesLoaded = false
+        failed = false
+        loading = true
+        val cats = runCatchingNonCancel { repository.categories() }.getOrNull()
+        if (cats == null) {
+            failed = true
+            loading = false
+        } else {
+            categories = cats
+            categoriesLoaded = true
+        }
     }
 
+    // Só a resposta MAIS RECENTE mexe no ecrã; o cancelamento nunca vira erro.
     suspend fun loadPage(pg: Int) {
-        val res = runCatching { repository.list(pg, effectiveCategory, hasUser, LIMIT) }.getOrNull()
-        if (res == null) { snackbar.showSnackbar(t.t("errors.networkError")); return }
-        items = if (defaultFilter) res.channels.filter { it.logo.isNotBlank() } else res.channels
-        pages = res.pages
-        grandTotal = res.grandTotal
-        page = pg
+        val mySeq = loadSeq.incrementAndGet()
+        loading = true
+        val res = runCatchingNonCancel { repository.list(pg, effectiveCategory, hasUser, LIMIT) }.getOrNull()
+        if (mySeq != loadSeq.get()) return
+        if (res == null) {
+            failed = true
+        } else {
+            failed = false
+            items = if (defaultFilter) res.channels.filter { it.logo.isNotBlank() } else res.channels
+            pages = res.pages
+            grandTotal = res.grandTotal
+            page = pg
+        }
+        loading = false
     }
 
     // Recarrega a página 1 quando muda a categoria efectiva (só depois das categorias, como no web).
     LaunchedEffect(effectiveCategory, categoriesLoaded) {
         if (query.isNotBlank() || !categoriesLoaded) return@LaunchedEffect
-        loading = true
         loadPage(1)
-        loading = false
     }
 
     // Pesquisa com debounce de 500ms (searchChannels).
     LaunchedEffect(query) {
         if (query.isBlank()) {
-            if (categoriesLoaded) { loading = true; loadPage(1); loading = false }
+            if (categoriesLoaded) loadPage(1)
             return@LaunchedEffect
         }
         delay(500)
         searching = true
-        val res = runCatching { repository.search(query.trim(), hasUser) }.getOrNull()
-        if (res != null) { items = res; pages = 1 } else snackbar.showSnackbar(t.t("errors.networkError"))
+        val res = runCatchingNonCancel { repository.search(query.trim(), hasUser) }.getOrNull()
+        if (res != null) { items = res; pages = 1; failed = false } else snackbar.showSnackbar(t.t("errors.networkError"))
         searching = false
     }
 
@@ -188,7 +212,7 @@ fun ChannelsScreen(
         }
     }
 
-    fun goPage(p: Int) { scope.launch { loading = true; loadPage(p); loading = false } }
+    fun goPage(p: Int) { scope.launch { loadPage(p) } }
 
     // `.channels-grid`: minmax(200px) gap 12 · <=768px minmax(150px) gap 9 · <=480px 2 colunas
     val cols = when { w <= 480 -> GridCells.Fixed(2); w <= 768 -> GridCells.Adaptive(150.dp); else -> GridCells.Adaptive(200.dp) }
@@ -267,6 +291,20 @@ fun ChannelsScreen(
 
             when {
                 loading -> items(12) { Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).pxShimmer(RoundedCornerShape(Px.Radius))) }
+                failed && items.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                    PxEmptyState(
+                        icon = Icons.Filled.LiveTv,
+                        title = t.t("errors.networkError"),
+                        description = t.t("errors.generic"),
+                        action = {
+                            PxButton(
+                                t.t("common.retry"),
+                                onClick = { reloadKey++ },
+                                modifier = Modifier.padding(top = 12.dp),
+                            )
+                        },
+                    )
+                }
                 items.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
                     val clearAction: (@Composable () -> Unit)? =
                         if (query.isNotBlank() || selectedCategory != null || animeOnly) {

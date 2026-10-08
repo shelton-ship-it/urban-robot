@@ -17,6 +17,9 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -24,6 +27,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -41,6 +46,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -50,7 +57,10 @@ import io.pixgo.app.data.player.PlayerFactory
 import io.pixgo.app.data.player.PlayerRepository
 import io.pixgo.app.ui.common.PxPlayerSkeleton
 import io.pixgo.app.ui.common.rememberFullscreenState
+import io.pixgo.app.ui.common.PxButton
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Canais são streams HLS/TS abertos, sem nenhuma camada de DRM (ao
@@ -98,6 +108,49 @@ fun ChannelsPlayerScreen(
     // Sem handshake aqui — o gate (GET /api/channels/:id) já correu em
     // ChannelsScreen antes de navegar para este ecrã.
     LaunchedEffect(exoPlayer) { prepared = true }
+
+    // ── Recuperação silenciosa (spinner) antes de qualquer erro ────────────────────────────────
+    // Um erro fatal do ExoPlayer (CDN lento/indisponível um instante) deixava o ecrã preso, sem
+    // spinner nem mensagem, "como se o canal não existisse" — e ao reabrir tocava. Agora re-prepara
+    // sozinho com espera crescente, com o spinner visível, e só mostra erro (com "Tentar novamente")
+    // depois de ~1 min sem conseguir tocar. O contador volta a zero assim que o vídeo toca.
+    val scope = rememberCoroutineScope()
+    var errorCount by remember(exoPlayer) { mutableIntStateOf(0) }
+    var recovering by remember(exoPlayer) { mutableStateOf(false) }
+    var buffering by remember(exoPlayer) { mutableStateOf(false) }
+    var errorMessage by remember(exoPlayer) { mutableStateOf<String?>(null) }
+
+    DisposableEffect(exoPlayer) {
+        var recoverJob: Job? = null
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) { buffering = state == Player.STATE_BUFFERING }
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) { errorCount = 0; recovering = false; errorMessage = null }
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                android.util.Log.e("PixGoChannels", "erro do player: ${error.errorCodeName}", error)
+                errorCount += 1
+                if (errorCount > LIVE_MAX_RECOVERIES) {
+                    recovering = false
+                    errorMessage = "Não foi possível carregar o canal. Verifique a ligação."
+                    return
+                }
+                recovering = true
+                recoverJob?.cancel()
+                recoverJob = scope.launch {
+                    delay(LIVE_RECOVER_DELAYS_MS[(errorCount - 1).coerceIn(0, LIVE_RECOVER_DELAYS_MS.lastIndex)])
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = true
+                }
+            }
+        }
+        buffering = exoPlayer.playbackState == Player.STATE_BUFFERING
+        exoPlayer.addListener(listener)
+        onDispose {
+            recoverJob?.cancel()
+            exoPlayer.removeListener(listener)
+        }
+    }
 
     LaunchedEffect(exoPlayer) {
         while (true) {
@@ -179,6 +232,39 @@ fun ChannelsPlayerScreen(
 
             if (!prepared) PxPlayerSkeleton()
 
+            // Spinner persistente: buffering real + recuperação automática (antes ficava um ecrã preto parado).
+            if (errorMessage == null && (buffering || recovering)) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        trackColor = Color(0x33FFFFFF),
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(44.dp),
+                    )
+                }
+            }
+
+            errorMessage?.let { msg ->
+                Column(
+                    Modifier.fillMaxSize().background(Color(0xCC000000)).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(msg, color = Color.White, fontSize = 13.sp)
+                    PxButton(
+                        text = "Tentar novamente",
+                        onClick = {
+                            errorMessage = null
+                            errorCount = 0
+                            recovering = true
+                            exoPlayer.prepare()
+                            exoPlayer.playWhenReady = true
+                        },
+                        modifier = Modifier.padding(top = 12.dp),
+                    )
+                }
+            }
+
             if (fs.isFullscreen) {
                 IconButton(onClick = { fsS.toggle() }, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
                     Icon(Icons.Filled.ArrowBack, contentDescription = "Voltar", tint = Color.White)
@@ -207,3 +293,6 @@ fun ChannelsPlayerScreen(
         )
     }
 }
+
+private const val LIVE_MAX_RECOVERIES = 12
+private val LIVE_RECOVER_DELAYS_MS = longArrayOf(800L, 1_500L, 3_000L, 5_000L)

@@ -1,6 +1,8 @@
 package io.pixgo.app.ui.watch
 
 import android.net.Uri
+import android.view.LayoutInflater
+import android.view.View
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,6 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -45,6 +50,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import io.pixgo.app.R
 import io.pixgo.app.data.model.UpsellPlan
 import io.pixgo.app.data.player.BinDecryptDataSource
 import io.pixgo.app.data.player.BinFormat
@@ -55,7 +61,9 @@ import io.pixgo.app.data.player.StreamHandshakeResult
 import io.pixgo.app.ui.common.PxButton
 import io.pixgo.app.ui.common.PxPlayerSkeleton
 import io.pixgo.app.ui.theme.Px
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Equivalente ao componente ShakaPlayer.tsx (que, apesar do nome, usa
@@ -122,6 +130,13 @@ fun PlayerScreen(
     // Auto-next com contagem de 5s após 'ended' — mesmo comportamento do
     // ShakaPlayer.tsx original (setAutoNextIn(5) + setInterval 1000ms).
     var autoNextIn by remember { mutableStateOf<Int?>(null) }
+    // Spinner persistente: buffering real do ExoPlayer + recuperação automática de erros.
+    // (O web nunca mostra erro em falha de rede do hls.js: faz startLoad()/recoverMediaError()
+    // em silêncio e o <video> mostra o seu spinner — é isto que se replica aqui.)
+    var buffering by remember { mutableStateOf(false) }
+    var recovering by remember { mutableStateOf(false) }
+    var errorCount by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
 
     val downloadStore = remember { io.pixgo.app.data.download.DownloadStore(context) }
     val exoPlayer = remember(contentId, episodeId) {
@@ -138,6 +153,8 @@ fun PlayerScreen(
     LaunchedEffect(contentId, episodeId, offline, attempt) {
         loading = true
         errorMessage = null
+        recovering = false
+        errorCount = 0
         if (offline) {
             if (repository.startLocal(contentId, episodeId)) {
                 drmKey = repository.offlineKey()
@@ -159,7 +176,7 @@ fun PlayerScreen(
         }
         when (val result = repository.handshake(contentId, episodeId)) {
             is StreamHandshakeResult.Ok -> {
-                drmKey = BinFormat.keyFromHex(result.info.drmKeyHex)
+                drmKey = result.info.drmKeyHex?.takeIf { it.isNotBlank() }?.let { BinFormat.keyFromHex(it) }
                 exoPlayer.setMediaItem(MediaItem.fromUri(Uri.parse(result.info.masterUrl)))
                 exoPlayer.prepare()
                 exoPlayer.playWhenReady = true
@@ -222,19 +239,49 @@ fun PlayerScreen(
         }
     }
 
-    // Auto-next (ShakaPlayer.tsx:770-783) + erros de reprodução com "Tentar novamente".
+    // Auto-next (ShakaPlayer.tsx:770-783) + estado de buffering + recuperação de erros.
     DisposableEffect(exoPlayer) {
+        buffering = exoPlayer.playbackState == Player.STATE_BUFFERING
+        var recoverJob: Job? = null
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
+                buffering = state == Player.STATE_BUFFERING
                 if (state == Player.STATE_ENDED && onNextEpisodeS != null) autoNextIn = 5
             }
 
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) { errorCount = 0; recovering = false }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
-                errorMessage = "Falha ao reproduzir o vídeo. Verifique a ligação."
+                android.util.Log.e("PixGoPlayer", "erro do player: ${error.errorCodeName}", error)
+                // Mesma filosofia do web: erro fatal de rede/media → tenta recuperar
+                // sozinho (re-prepara na posição actual) com o spinner visível. Só depois
+                // de várias tentativas seguidas sem conseguir reproduzir é que mostra o
+                // erro com "Tentar novamente". Cobre também o falso erro ao virar o ecrã
+                // (superfície/codec recriados) e rede que cai a meio de um segmento.
+                errorCount += 1
+                if (errorCount > MAX_AUTO_RECOVERIES) {
+                    recovering = false
+                    errorMessage = "Falha ao reproduzir o vídeo. Verifique a ligação."
+                    return
+                }
+                recovering = true
+                val pos = exoPlayer.currentPosition
+                recoverJob?.cancel()
+                recoverJob = scope.launch {
+                    delay(RECOVER_DELAYS_MS[(errorCount - 1).coerceIn(0, RECOVER_DELAYS_MS.lastIndex)])
+                    if (pos > 0L) exoPlayer.seekTo(pos)
+                    exoPlayer.prepare()
+                    exoPlayer.playWhenReady = true
+                }
             }
         }
         exoPlayer.addListener(listener)
-        onDispose { exoPlayer.removeListener(listener) }
+        onDispose {
+            recoverJob?.cancel()
+            exoPlayer.removeListener(listener)
+        }
     }
     LaunchedEffect(autoNextIn) {
         var n = autoNextIn
@@ -276,17 +323,19 @@ fun PlayerScreen(
         )
     }
 
+    val spinnerVisible = errorMessage == null && (loading || buffering || recovering)
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // O PlayerView existe SEMPRE (mesmo durante o handshake): a superfície
         // fica pronta e o spinner nativo de buffering funciona desde o 1.º frame.
         AndroidView(
             factory = { ctx ->
-                PlayerView(ctx).apply {
+                (LayoutInflater.from(ctx).inflate(R.layout.px_player_view, null, false) as PlayerView).apply {
                     player = exoPlayer
                     useController = true
                     resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    // Spinner PADRÃO do player em todo o buffering/rebuffer/seek.
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    // O spinner é do Compose (abaixo); o nativo fica desligado.
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
                     // Controlos nativos sem anterior/seguinte; o ecrã inteiro é o
                     // botão nativo da própria barra.
                     setShowNextButton(false)
@@ -301,13 +350,30 @@ fun PlayerScreen(
                     pv.setFullscreenButtonClickListener(null)
                 }
                 syncFullscreenIcon(pv, fullscreen)
+                // Enquanto o spinner está visível, os botões pause/«/» do centro saem de
+                // cima dele: davam a impressão de player quebrado. O spinner manda.
+                setCenterControlsHidden(pv, hidden = spinnerVisible)
             },
             onRelease = { pv -> pv.player = null },
             modifier = Modifier.fillMaxSize()
         )
 
-        // Handshake em curso: skeleton (não spinner).
+        // Handshake em curso: skeleton por baixo (mesma geometria do vídeo).
         if (loading && errorMessage == null) PxPlayerSkeleton()
+
+        // Spinner BRANCO persistente, centrado, por cima de tudo (menos do erro): handshake e
+        // tentativas, buffering, rede lenta/caída, recuperação automática. Em ecrã inteiro
+        // também (antes só o spinner nativo, que não aparecia de forma fiável).
+        if (spinnerVisible) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    trackColor = Color(0x33FFFFFF),
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(44.dp),
+                )
+            }
+        }
 
         errorMessage?.let { msg ->
             Column(
@@ -387,4 +453,32 @@ private fun syncFullscreenIcon(pv: PlayerView, fullscreen: Boolean) {
     runCatching {
         pv.javaClass.getMethod("setFullscreenButtonState", java.lang.Boolean.TYPE).invoke(pv, fullscreen)
     }
+}
+
+// Recuperação silenciosa (com spinner) durante ~1 min antes de mostrar qualquer erro; o contador
+// só volta a zero quando o vídeo efetivamente toca (onIsPlayingChanged).
+private const val MAX_AUTO_RECOVERIES = 12
+private val RECOVER_DELAYS_MS = longArrayOf(800L, 1_500L, 3_000L, 5_000L)
+
+/**
+ * Esconde/mostra o bloco central do controlador nativo (pause, «, »). O contentor
+ * `exo_center_controls` não é tocado pelo PlayerControlView (ao contrário dos botões
+ * individuais, cuja visibilidade ele reescreve a cada actualização). INVISIBLE também
+ * impede toques acidentais enquanto o vídeo está a carregar. Por id em runtime: se esta
+ * versão do Media3 não tiver o id, cai para os botões e, no pior caso, é um no-op.
+ */
+private fun setCenterControlsHidden(pv: PlayerView, hidden: Boolean) {
+    val res = pv.resources
+    val pkg = pv.context.packageName
+    fun find(name: String): View? {
+        val id = res.getIdentifier(name, "id", pkg)
+        return if (id != 0) pv.findViewById<View>(id) else null
+    }
+    val container = find("exo_center_controls")
+    if (container != null) {
+        container.visibility = if (hidden) View.INVISIBLE else View.VISIBLE
+        return
+    }
+    listOf("exo_play_pause", "exo_rew", "exo_ffwd", "exo_rew_with_amount", "exo_ffwd_with_amount")
+        .forEach { name -> find(name)?.alpha = if (hidden) 0f else 1f }
 }

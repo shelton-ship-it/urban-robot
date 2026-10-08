@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    PlayerView com TextureView em vez de SurfaceView.
+    A SurfaceView "fura" a janela: em ecrã inteiro, ao virar o aparelho de um lado
+    da horizontal para o outro (180°) ou ao mudar o tamanho do contentor Compose, a
+    superfície é destruída e recriada — daí o piscar e, em alguns aparelhos, o erro
+    do codec que o app tratava como "falha ao reproduzir". A TextureView acompanha o
+    layout como qualquer outra View e sobrevive a estas mudanças.
+    O spinner de buffering é desenhado pelo Compose (PlayerScreen), por isso o
+    nativo fica desligado aqui (show_buffering=never) para não haver dois.
+-->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:surface_type="texture_view"
+    app:use_controller="true"
+    app:resize_mode="fit"
+    app:show_buffering="never"
+    app:keep_content_on_player_reset="true"
+    app:shutter_background_color="#000000" />

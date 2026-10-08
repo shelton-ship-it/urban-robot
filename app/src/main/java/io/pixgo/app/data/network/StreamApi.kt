@@ -11,9 +11,12 @@ import retrofit2.http.QueryMap
 @Serializable
 data class StreamResponse(
     @SerialName("master_url") val masterUrl: String,
-    @SerialName("drm_key_hex") val drmKeyHex: String,
-    @SerialName("seg_ext") val segExt: String = "bin",
-    val quality: String? = null,
+    // Conteúdo NÃO cifrado: o servidor devolve drm_key_hex:null (routes/content.js) — com String
+    // não nula a desserialização rebentava e o handshake falhava em todas as tentativas.
+    @SerialName("drm_key_hex") val drmKeyHex: String? = null,
+    @SerialName("seg_ext") val segExt: String? = "bin",
+    // playlist.qualities[0] — formato não garantido (string/objeto); não é usado pelo player.
+    val quality: kotlinx.serialization.json.JsonElement? = null,
     @SerialName("content_id") val contentId: String? = null,
     @SerialName("episode_id") val episodeId: String? = null
 )

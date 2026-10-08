@@ -13,7 +13,11 @@ import kotlinx.coroutines.awaitAll
 import io.pixgo.app.data.network.MyListMutationBody
 import io.pixgo.app.data.model.ProgressUpdateBody
 import io.pixgo.app.data.model.ViewRegisterResponse
+import io.pixgo.app.data.network.LoadFailedException
 import io.pixgo.app.data.network.NetworkModule
+import io.pixgo.app.data.network.Patience
+import io.pixgo.app.data.network.patiently
+import io.pixgo.app.data.network.runCatchingNonCancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -67,6 +71,20 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
             if (auth.refreshAccessToken() != null) return call()
         }
         return resp
+    }
+
+    /**
+     * Pedido PACIENTE: espera/repete em falhas transitórias (rede, 408/429/5xx) até
+     * [budgetMs] e só então lança [LoadFailedException]. Um 4xx definitivo é devolvido.
+     * A renovação do token (401) acontece dentro de cada tentativa.
+     */
+    private suspend fun <T> request(budgetMs: Long = Patience.MAIN_BUDGET_MS, call: suspend () -> Response<T>): Response<T> =
+        patiently(budgetMs) { retryOn401(call) }
+
+    /** Sucesso ou lança: nunca devolve "lista vazia" para esconder uma falha. */
+    private fun <T> Response<T>.bodyOrThrow(): T {
+        if (!isSuccessful) throw LoadFailedException("HTTP ${code()}")
+        return body() ?: throw LoadFailedException("Resposta vazia (HTTP ${code()})")
     }
 
     /** `new URLSearchParams({ lang, ...p })`: lang primeiro, restantes pela ordem dada, nulos omitidos. */
@@ -136,9 +154,8 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
             "feed" to "1",
             "profile_id" to profileParam(activeProfileId),
         )
-        val resp = retryOn401 { api.list(params) }
-        if (!resp.isSuccessful) return emptyList()
-        return resp.body()?.items ?: emptyList()
+        val resp = request { api.list(params) }
+        return resp.bodyOrThrow().items ?: emptyList()
     }
 
     /**
@@ -159,17 +176,15 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
             "type" to "series",
             "profile_id" to pid,
         )
-        val resp = retryOn401 { api.list(params) }
-        if (!resp.isSuccessful) return emptyList()
-        val list = (resp.body()?.items ?: emptyList()).filter { it.isChannelSeries }
+        val resp = request(Patience.OPTIONAL_BUDGET_MS) { api.list(params) }
+        val list = (resp.bodyOrThrow().items ?: emptyList()).filter { it.isChannelSeries }
         listCache[key] = Cached(System.currentTimeMillis(), list)
         return list
     }
 
     suspend fun continueWatching(): List<ContinueItem> {
-        val resp = retryOn401 { api.continueWatching(mapOf("limit" to "6")) }
-        if (!resp.isSuccessful) return emptyList()
-        return resp.body() ?: emptyList()
+        val resp = request(Patience.OPTIONAL_BUDGET_MS) { api.continueWatching(mapOf("limit" to "6")) }
+        return resp.bodyOrThrow()
     }
 
     /** Espelha app/main/catalog/page.tsx (paginação numerada, não infinita). */
@@ -191,9 +206,7 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
             "type" to (if (type != "all") type else null),
             "profile_id" to profileParam(activeProfileId),
         )
-        val resp = retryOn401 { api.list(params) }
-        if (!resp.isSuccessful) return CatalogPage(emptyList(), 1)
-        val body = resp.body() ?: return CatalogPage(emptyList(), 1)
+        val body = request { api.list(params) }.bodyOrThrow()
         return CatalogPage(body.items, body.pagination?.pages ?: 1)
     }
 
@@ -217,9 +230,8 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
                 "sort" to "recent",
                 "profile_id" to pid,
             )
-            val resp = retryOn401 { api.list(params) }
-            if (!resp.isSuccessful) return emptyList()
-            val list = resp.body()?.items ?: emptyList()
+            val resp = request(Patience.OPTIONAL_BUDGET_MS) { api.list(params) }
+            val list = resp.bodyOrThrow().items ?: emptyList()
             listCache[key] = Cached(System.currentTimeMillis(), list)
             list
         }
@@ -228,18 +240,28 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
 
     /** Espelha app/main/search/page.tsx — sem sugestões/popular (removidas do original). */
     suspend fun search(query: String, lang: String, limit: Int = 24): List<ContentItem> {
-        val resp = retryOn401 { api.search(mapOf("q" to query, "limit" to limit.toString(), "lang" to lang)) }
-        if (!resp.isSuccessful) return emptyList()
-        return resp.body()?.results ?: emptyList()
+        val resp = request(Patience.SEARCH_BUDGET_MS) { api.search(mapOf("q" to query, "limit" to limit.toString(), "lang" to lang)) }
+        return resp.bodyOrThrow().results ?: emptyList()
     }
 
     /** search/page.tsx mostra `res.pagination.total` ("{total} resultados para"). */
     data class SearchPage(val results: List<ContentItem>, val total: Int)
 
+    /**
+     * Como [searchPage], mas devolve null quando o pedido FALHA (HTTP != 2xx / corpo vazio),
+     * em vez de fingir "0 resultados": a UI distingue "sem resultados" de "erro de rede".
+     */
+    suspend fun searchPageOrNull(query: String, lang: String, limit: Int = 24): SearchPage? {
+        val body = try {
+            request(Patience.SEARCH_BUDGET_MS) { api.search(mapOf("q" to query, "limit" to limit.toString(), "lang" to lang)) }
+                .bodyOrThrow()
+        } catch (e: LoadFailedException) { return null }
+        return SearchPage(body.results, body.pagination?.total ?: 0)
+    }
+
     suspend fun searchPage(query: String, lang: String, limit: Int = 24): SearchPage {
-        val resp = retryOn401 { api.search(mapOf("q" to query, "limit" to limit.toString(), "lang" to lang)) }
-        if (!resp.isSuccessful) return SearchPage(emptyList(), 0)
-        val body = resp.body() ?: return SearchPage(emptyList(), 0)
+        val body = request(Patience.SEARCH_BUDGET_MS) { api.search(mapOf("q" to query, "limit" to limit.toString(), "lang" to lang)) }
+            .bodyOrThrow()
         return SearchPage(body.results, body.pagination?.total ?: 0)
     }
 
@@ -257,17 +279,16 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
      *     3 min partilhado com a Watch), em paralelo.
      */
     suspend fun myList(activeProfileId: String): List<MyListEntry> {
-        val resp = retryOn401 {
+        val resp = request {
             api.myList(mapOf("profileId" to activeProfileId, "limit" to "100", "lang" to io.pixgo.app.data.i18n.CONTENT_LANG))
         }
-        if (!resp.isSuccessful) return emptyList()
-        val entries = resp.body()?.items ?: return emptyList()
+        val entries = resp.bodyOrThrow().items ?: emptyList()
         return kotlinx.coroutines.coroutineScope {
             entries.map { e ->
                 async {
                     val c = e.content
                     if (c != null && !c.title.isNullOrBlank() && !c.poster.isNullOrBlank()) return@async e
-                    val d = runCatching { content(e.contentId, io.pixgo.app.data.i18n.CONTENT_LANG, null) }.getOrNull()
+                    val d = runCatchingNonCancel { content(e.contentId, io.pixgo.app.data.i18n.CONTENT_LANG, null) }.getOrNull()
                         ?: return@async e
                     e.copy(
                         content = MyListContent(
@@ -305,9 +326,11 @@ class CatalogRepository(private val context: Context, private val auth: AuthRepo
         // contentApi.get: { lang, [profile_id] } — aqui o profile_id é sempre
         // necessário (traz in_list embutido), ao contrário do catálogo.
         val params = query(lang, "profile_id" to activeProfileId)
-        val resp = retryOn401 { api.content(id, params) }
-        if (!resp.isSuccessful) return null
-        val body = resp.body() ?: return null
+        val resp = request { api.content(id, params) }
+        // 404 definitivo = conteúdo inexistente (único caso de "não encontrado" legítimo);
+        // qualquer outra falha lança LoadFailedException e a UI mostra "Tentar novamente".
+        if (resp.code() == 404) return null
+        val body = resp.bodyOrThrow()
         contentCache[key] = Cached(System.currentTimeMillis(), body)
         return body
     }

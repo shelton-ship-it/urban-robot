@@ -36,8 +36,15 @@ object Hosts {
  * No web, NENHUMA chamada de API/página tem timeout próprio: authedFetch/fetch()
  * esperam pelo que o navegador esperar (não há AbortSignal em lib/api.ts,
  * store/auth.ts, legal, downloads, channels-source…). Os ÚNICOS timeouts do
- * frontend são: player hls.js/BinLoader 20 s TOTAIS (frag/manifest/level),
- * VAST 4 s, anúncio 30 s e sonda de adblock 2,5 s.
+ * frontend são: VAST 4 s, anúncio 30 s e sonda de adblock 2,5 s (e o hls.js do
+ * web, que recupera sozinho: startLoad()/recoverMediaError() em silêncio).
+ *
+ * PLAYER (revisto): os 20 s TOTAIS por pedido do hls.js NÃO são equivalentes no
+ * Android — um segmento de ~6 MB numa ligação de 1 Mbps demora ~50 s, estoirava
+ * aos 20 s, era repetido igual e falhava sempre (parecia "segmento não encontrado"
+ * e, pior, um pedido abortado nunca reporta débito ao medidor de banda, por isso o
+ * ABR não descia de qualidade). Agora o player tem timeout total longo (2 min) e
+ * 30 s de inatividade: só se desiste de um pedido que está mesmo parado.
  *
  * O OkHttp, por defeito, corta aos 10 s de silêncio (connect/read/write) — em
  * rede lenta ou com servidor "frio" isso dava erro/spinner/lista vazia em
@@ -54,9 +61,10 @@ object NetTimeouts {
     const val READ_S = 60L
     const val WRITE_S = 60L
 
-    /** Player: igual ao hls.js (frag/manifest/levelLoadingTimeOut e BinLoader). */
-    const val PLAYER_TOTAL_S = 20L
-    const val PLAYER_CONNECT_S = 15L
+    /** Player: paciência longa — só corta um pedido PARADO (inatividade) ou absurdamente lento. */
+    const val PLAYER_TOTAL_S = 120L
+    const val PLAYER_READ_S = 30L
+    const val PLAYER_CONNECT_S = 20L
 }
 
 /** Aplica os timeouts "estilo fetch do navegador" (generosos, sem total). */
@@ -197,10 +205,9 @@ object NetworkModule {
     @Volatile private var playerClient: OkHttpClient? = null
 
     /**
-     * Cliente do PLAYER (segmentos .bin/.m3u8 do CDN). Equivalente às opções de
-     * rede do hls.js do frontend (fragLoadingTimeOut/manifestLoadingTimeOut 20 s,
-     * fragLoadingMaxRetry 4):
-     *  - timeout TOTAL de 20 s por pedido (callTimeout) + 20 s de inatividade;
+     * Cliente do PLAYER (segmentos .bin/.m3u8 do CDN). Mesma ideia das opções de
+     * rede do hls.js do frontend, mas com paciência maior (ver NetTimeouts):
+     *  - timeout TOTAL de 120 s por pedido (callTimeout) + 30 s de inatividade;
      *  - retryOnConnectionFailure + pool de ligações HTTP/2 reutilizadas (menos
      *    handshakes TLS entre segmentos consecutivos);
      *  - cache em disco de 64 MB: os segmentos do jsDelivr são imutáveis
@@ -215,13 +222,11 @@ object NetworkModule {
             val client = OkHttpClient.Builder()
                 .cache(cache)
                 .connectTimeout(NetTimeouts.PLAYER_CONNECT_S, TimeUnit.SECONDS)
-                .readTimeout(NetTimeouts.PLAYER_TOTAL_S, TimeUnit.SECONDS)
+                .readTimeout(NetTimeouts.PLAYER_READ_S, TimeUnit.SECONDS)
                 .writeTimeout(NetTimeouts.PLAYER_CONNECT_S, TimeUnit.SECONDS)
-                // TIMEOUT TOTAL por pedido (conexão + headers + corpo inteiro): é o
-                // equivalente exato do setTimeout(20s) do BinLoader e dos
-                // frag/manifest/levelLoadingTimeOut: 20_000 do hls.js. O readTimeout
-                // acima só mede inatividade entre bytes — um segmento a pingar nunca
-                // estourava e o player ficava "encravado". Cada retry recomeça o relógio.
+                // TIMEOUT TOTAL por pedido (conexão + headers + corpo inteiro): longo (2 min)
+                // para segmentos grandes em rede lenta; o readTimeout mede a inatividade entre
+                // bytes e corta cedo um pedido PARADO. Cada retry recomeça o relógio.
                 .callTimeout(NetTimeouts.PLAYER_TOTAL_S, TimeUnit.SECONDS)
                 .retryOnConnectionFailure(true)
                 .connectionPool(ConnectionPool(8, 5, TimeUnit.MINUTES))

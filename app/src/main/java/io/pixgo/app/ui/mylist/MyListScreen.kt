@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import io.pixgo.app.data.network.runCatchingNonCancel
 import io.pixgo.app.data.catalog.CatalogRepository
 import io.pixgo.app.data.i18n.LocalTranslator
 import io.pixgo.app.data.model.MyListEntry
@@ -63,15 +64,24 @@ fun MyListScreen(
     val spec = rememberGridSpec()
     var items by remember { mutableStateOf<List<MyListEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var failed by remember { mutableStateOf(false) }
+    var reloadKey by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    LaunchedEffect(activeProfileId) {
+    LaunchedEffect(activeProfileId, reloadKey) {
         if (activeProfileId == null) { loading = false; return@LaunchedEffect }
         loading = true
-        items = runCatching { catalogRepository.myList(activeProfileId) }.getOrDefault(emptyList())
-        catalogRepository.bindMyListProfile(activeProfileId)
-        catalogRepository.seedMyList(items.map { it.contentId })
+        failed = false
+        // Cancelamento (perfil muda) NÃO é falha; falha real (depois de esperar) ≠ lista vazia.
+        val res = runCatchingNonCancel { catalogRepository.myList(activeProfileId) }.getOrNull()
+        if (res == null) {
+            failed = true
+        } else {
+            items = res
+            catalogRepository.bindMyListProfile(activeProfileId)
+            catalogRepository.seedMyList(items.map { it.contentId })
+        }
         loading = false
     }
 
@@ -85,7 +95,7 @@ fun MyListScreen(
             snackbarHostState.showSnackbar("\uD83D\uDDD1 " + t.t("myList.removed"))
         }
         scope.launch {
-            val ok = runCatching { catalogRepository.removeFromMyList(activeProfileId, entry.contentId) }.getOrDefault(false)
+            val ok = runCatchingNonCancel { catalogRepository.removeFromMyList(activeProfileId, entry.contentId) }.getOrDefault(false)
             if (!ok) {
                 items = before
                 catalogRepository.seedMyList(listOf(entry.contentId))
@@ -111,6 +121,19 @@ fun MyListScreen(
             }
             when {
                 loading -> item(span = { GridItemSpan(maxLineSpan) }) { io.pixgo.app.ui.common.PxContentGridSkeleton(count = 12) }
+                failed && items.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
+                    PxEmptyState(
+                        icon = Icons.Filled.Bookmark,
+                        title = t.t("errors.networkError"),
+                        description = t.t("errors.generic"),
+                        action = {
+                            PxButton(
+                                text = t.t("common.retry"), onClick = { reloadKey++ },
+                                modifier = Modifier.padding(top = 12.dp),
+                            )
+                        }
+                    )
+                }
                 items.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }) {
                     PxEmptyState(
                         icon = Icons.Filled.Bookmark,

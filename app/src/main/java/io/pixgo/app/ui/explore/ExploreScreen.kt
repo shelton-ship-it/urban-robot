@@ -49,6 +49,8 @@ import io.pixgo.app.data.i18n.LocalTranslator
 import io.pixgo.app.data.i18n.contentLangFor
 import io.pixgo.app.data.model.ContentItem
 import io.pixgo.app.data.model.PaymentPlan
+import io.pixgo.app.data.network.runCatchingNonCancel
+import kotlinx.coroutines.delay
 import io.pixgo.app.ui.common.ContentCardCell
 import io.pixgo.app.ui.common.PxBtnSize
 import io.pixgo.app.ui.common.PxBtnVariant
@@ -137,6 +139,13 @@ fun ExploreScreen(
     var page by remember { mutableStateOf(1) }
     var pages by remember { mutableStateOf(1) }
     var loading by remember { mutableStateOf(true) }
+    // Falha REAL (depois de muita paciência): mostra erro + "Tentar novamente", nunca "nenhum conteúdo".
+    var failed by remember { mutableStateOf(false) }
+    var reloadKey by remember { mutableStateOf(0) }
+    // Só a resposta MAIS RECENTE pode mexer no ecrã (perfil/idioma resolvem logo a seguir ao arranque
+    // e relançam o carregamento; a resposta velha nunca pode sobrepor-se à nova).
+    val loadSeq = remember { java.util.concurrent.atomic.AtomicInteger(0) }
+    var moreTick by remember { mutableStateOf(0) }
     var hasMore by remember { mutableStateOf(true) }
     var loadingMore by remember { mutableStateOf(false) }
     var trending by remember { mutableStateOf<List<ContentItem>>(emptyList()) }
@@ -169,9 +178,13 @@ fun ExploreScreen(
 
     // load(1) sempre que tipo/ordem/perfil/idioma mudam; load(n) para a paginação numerada.
     suspend fun load(p: Int) {
+        val mySeq = loadSeq.incrementAndGet()
         loading = true
+        failed = false
         val typeAtStart = type
-        val res = runCatching { fetch(p) }.getOrNull()
+        // runCatchingNonCancel: o cancelamento (LaunchedEffect reiniciado) NÃO é falha.
+        val res = runCatchingNonCancel { fetch(p) }.getOrNull()
+        if (mySeq != loadSeq.get()) return   // já há um carregamento mais novo a tratar do ecrã
         if (res != null) {
             var all = res.items
             var pg = p
@@ -185,7 +198,8 @@ fun ExploreScreen(
             if (typeAtStart == "series" && p == 1) {
                 var extra = 0
                 while (more && extra < 4 && all.count { !it.isChannelSeries } < nTMin * 2) {
-                    val nx = runCatching { fetch(pg + 1) }.getOrNull() ?: break
+                    val nx = runCatchingNonCancel { fetch(pg + 1) }.getOrNull() ?: break
+                    if (mySeq != loadSeq.get()) return
                     val seen = all.map { it.id }.toHashSet()
                     all = all + nx.items.filter { it.id !in seen }
                     pg += 1; pgs = nx.pages; extra++
@@ -197,18 +211,21 @@ fun ExploreScreen(
             page = pg
             hasMore = more
         } else {
+            // Falha confirmada (paciência esgotada) ≠ lista vazia.
             items = emptyList()
+            failed = true
         }
         loading = false
-        runCatching { gridState.scrollToItem(0) }
+        runCatchingNonCancel { gridState.scrollToItem(0) }
     }
 
-    LaunchedEffect(type, sort, activeProfileId, uiLang) { load(1) }
+    LaunchedEffect(type, sort, activeProfileId, uiLang, reloadKey) { load(1) }
 
     LaunchedEffect(type, sort, isKidProfile, activeProfileId, uiLang) {
         if (type != "all" || isKidProfile) { trending = emptyList(); trendingLoading = false; return@LaunchedEffect }
         trendingLoading = true
-        trending = runCatching { catalogRepository.loadTrending(activeProfileId, contentLang, sort) }.getOrDefault(emptyList())
+        trending = runCatchingNonCancel { catalogRepository.loadTrending(activeProfileId, contentLang, sort) }
+            .getOrDefault(emptyList())
         trendingLoading = false
     }
 
@@ -219,9 +236,16 @@ fun ExploreScreen(
         val sortAtStart = sort
         scope.launch {
             val next = page + 1
-            val res = runCatching { fetch(next) }.getOrNull()
+            val res = runCatchingNonCancel { fetch(next) }.getOrNull()
             // descarta respostas de um filtro que entretanto mudou
             if (typeAtStart != type || sortAtStart != sort) { loadingMore = false; return@launch }
+            if (res == null) {
+                // falha transitória: tenta outra vez daqui a pouco (sem mostrar erro nem parar o scroll)
+                loadingMore = false
+                delay(4_000L)
+                moreTick++
+                return@launch
+            }
             if (res != null) {
                 val seen = items.map { it.id }.toHashSet()
                 items = items + res.items.filter { it.id !in seen }
@@ -306,6 +330,16 @@ fun ExploreScreen(
                     if (type == "series") SeriesRowsSkeleton(nM, nT, rowGap)
                     else PxContentGridSkeleton(count = 18)
                 }
+                failed -> item(span = { GridItemSpan(maxLineSpan) }, key = "failed") {
+                    PxEmptyState(
+                        icon = Icons.Filled.TvOff,
+                        title = t.t("errors.networkError"),
+                        description = t.t("errors.generic"),
+                        action = {
+                            PxButton(t.t("common.retry"), onClick = { reloadKey++ }, modifier = Modifier.padding(top = 12.dp))
+                        },
+                    )
+                }
                 items.isEmpty() -> item(span = { GridItemSpan(maxLineSpan) }, key = "empty") {
                     PxEmptyState(
                         icon = Icons.Filled.TvOff,
@@ -340,7 +374,7 @@ fun ExploreScreen(
             // sentinela do scroll infinito + skeleton de "carregar mais"
             if (!loading && infinite) {
                 item(span = { GridItemSpan(maxLineSpan) }, key = "sentinel") {
-                    LaunchedEffect(items.size, hasMore, page) { if (hasMore) loadMore() }
+                    LaunchedEffect(items.size, hasMore, page, moreTick) { if (hasMore) loadMore() }
                     if (loadingMore) {
                         if (type == "series") {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(rowGap)) {

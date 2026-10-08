@@ -34,7 +34,12 @@ class ChannelsRepository(context: Context, private val auth: AuthRepository) {
     /** GET /api/channels/:id — gate anti-abuso antes de "reproduzir" (ver routes/channels.js). */
     suspend fun checkGate(channelId: String): ChannelGateResult {
         return try {
-            val resp = retryOn401 { api.gate(channelId) }
+            // Gate paciente: rede/5xx/408 repetem (o web também esperava). O 429 do gate é o limite
+            // de plano (com `plans` no corpo) — é a resposta, não se repete.
+            val resp = io.pixgo.app.data.network.patiently(
+                budgetMs = io.pixgo.app.data.network.Patience.OPTIONAL_BUDGET_MS,
+                retry429 = false,
+            ) { retryOn401 { api.gate(channelId) } }
             if (resp.isSuccessful) ChannelGateResult.Ok
             else if (resp.code() == 429) {
                 val err = parseErrorMessage(resp)
@@ -46,8 +51,10 @@ class ChannelsRepository(context: Context, private val auth: AuthRepository) {
                     else -> parseErrorMessage(resp)?.message ?: "Erro ao carregar canal."
                 }
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
-            ChannelGateResult.Denied("Falha de rede.")
+            ChannelGateResult.Denied("Falha de rede. Tente novamente.")
         }
     }
 
@@ -70,6 +77,8 @@ class ChannelsRepository(context: Context, private val auth: AuthRepository) {
                 }
                 else -> HeartbeatEvent.Ok
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             HeartbeatEvent.Ok // falha de rede pontual — ignora, tenta de novo no próximo tick (igual ao original)
         }

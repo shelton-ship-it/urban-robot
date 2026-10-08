@@ -73,6 +73,12 @@ fun SearchScreen(
     var results by remember { mutableStateOf<List<ContentItem>>(emptyList()) }
     var total by remember { mutableStateOf(0) }
     var loading by remember { mutableStateOf(false) }
+    // Termo cujos resultados estão realmente no ecrã. O "sem resultados" só vale para ESTE
+    // termo: durante o debounce (340 ms) e enquanto o pedido corre, `results` ainda é o da
+    // pesquisa anterior (ou vazio) e mostrar o empty-state ali era o falso "sem resultados"
+    // que piscava a cada letra. `failed` = pedido falhou (não é o mesmo que "0 resultados").
+    var searchedQuery by remember { mutableStateOf<String?>(null) }
+    var failed by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
     val myList = io.pixgo.app.ui.common.rememberMyList(catalogRepository, activeProfileId)
 
@@ -81,14 +87,31 @@ fun SearchScreen(
 
     LaunchedEffect(query, uiLang) {
         if (query.isBlank()) {
-            results = emptyList(); total = 0; loading = false
+            results = emptyList(); total = 0; loading = false; failed = false; searchedQuery = null
             return@LaunchedEffect
         }
-        delay(340)
+        // A partir daqui há pesquisa pendente: spinner no campo desde a primeira letra e
+        // nenhum empty-state até haver resposta para ESTE termo.
         loading = true
-        val page = runCatching { catalogRepository.searchPage(query, contentLangFor(uiLang)) }.getOrNull()
-        results = page?.results ?: emptyList()
-        total = page?.total ?: 0
+        failed = false
+        delay(340)
+        // Falha de rede / servidor frio: uma repetição silenciosa antes de dar como falhado
+        // (o web fica à espera; nunca transforma uma falha em "sem resultados").
+        var page: CatalogRepository.SearchPage? = null
+        for (attempt in 0 until 2) {
+            if (attempt > 0) delay(600)
+            page = runCatching { catalogRepository.searchPageOrNull(query, contentLangFor(uiLang)) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+                .getOrNull()
+            if (page != null) break
+        }
+        if (page != null) {
+            results = page.results
+            total = page.total
+            searchedQuery = query
+        } else {
+            failed = true
+        }
         loading = false
     }
 
@@ -132,7 +155,7 @@ fun SearchScreen(
             }
         }
 
-        if (query.isNotBlank() && !loading && results.isEmpty()) {
+        if (query.isNotBlank() && !loading && !failed && searchedQuery == query && results.isEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 PxEmptyState(
                     icon = Icons.Filled.SearchOff,
@@ -142,10 +165,20 @@ fun SearchScreen(
             }
         }
 
+        if (query.isNotBlank() && !loading && failed) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    t.t("errors.networkError"),
+                    color = Px.TextMuted, fontSize = 12.8.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
+        }
+
         if (results.isNotEmpty()) {
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Text(
-                    "$total ${t.t("search.results")} \"$query\"",
+                    "$total ${t.t("search.results")} \"${searchedQuery ?: query}\"",
                     color = Px.TextMuted, fontSize = 12.8.sp,
                     modifier = Modifier.padding(bottom = 4.dp)
                 )

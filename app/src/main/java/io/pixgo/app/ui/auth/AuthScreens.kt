@@ -419,14 +419,15 @@ private fun GoogleSection(authRepository: AuthRepository, disabled: Boolean, onE
                     }
                     res.exceptionOrNull()?.let { e ->
                         // LoginPage.tsx: err.error === 'AccountExistsUnlinked' ? err.message : googleLoginFailed
+                        android.util.Log.e("PixGoGoogle", "Backend recusou o login Google", e)
                         onError(
                             if (e is ApiException && e.error == "AccountExistsUnlinked" && !e.message.isNullOrBlank()) e.message!!
-                            else tr.t("hubAuth.googleLoginFailed")
+                            else tr.t("hubAuth.googleLoginFailed") + GoogleSignIn.debugReason(e)
                         )
                     }
                 }
                 GoogleResult.Cancelled -> Unit
-                is GoogleResult.Failure -> onError(tr.t("hubAuth.googleLoginFailed"))
+                is GoogleResult.Failure -> onError(tr.t("hubAuth.googleLoginFailed") + GoogleSignIn.debugReason(r.cause))
             }
             busy = false
         }

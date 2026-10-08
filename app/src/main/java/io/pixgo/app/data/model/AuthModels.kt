@@ -31,7 +31,10 @@ data class Plan(
     @SerialName("max_profiles") val maxProfiles: Int? = null,
     @SerialName("max_downloads") val maxDownloads: Int? = null,
     val currency: String? = null,
-    val gateway: String? = null
+    val gateway: String? = null,
+    /** Marca visível da processadora em MZ (NET-H | PAY-T) e métodos (mpesa | mpesa+emola) — decididos pelo backend (env MZ_GATEWAY). */
+    val processor: String? = null,
+    val methods: List<String>? = null
 )
 
 /**
@@ -67,7 +70,9 @@ data class HubPlan(
     val price: kotlinx.serialization.json.JsonPrimitive? = null,
     @SerialName("is_free") val isFree: Boolean? = null,
     val currency: String? = null,
-    val gateway: String? = null
+    val gateway: String? = null,
+    val processor: String? = null,
+    val methods: List<String>? = null
 )
 
 @Serializable

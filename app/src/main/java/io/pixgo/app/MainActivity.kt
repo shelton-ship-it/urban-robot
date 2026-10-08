@@ -435,6 +435,15 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
                         // fechar, invalida o cache de /me para reflectir um plano novo
                         // sem esperar pelo TTL de 30min.
                         scope.launch { app.authRepository.invalidateMeCacheAfterPayment() }
+                    },
+                    // Pagamento concluído (o hub tentou voltar ao `return_to`): num APK não
+                    // há site para onde regressar — vai para a HOME (Tendências), não deixa
+                    // a pessoa na tela de planos. X/voltar (onClose) continuam a não mudar de ecrã.
+                    onPaid = {
+                        checkoutUrl = null
+                        plansHighlight = null
+                        current = MainDest.HOME
+                        scope.launch { app.authRepository.invalidateMeCacheAfterPayment() }
                     }
                 )
             }

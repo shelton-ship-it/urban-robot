@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import io.pixgo.app.data.network.runCatchingNonCancel
 import io.pixgo.app.data.catalog.CatalogRepository
 import io.pixgo.app.data.i18n.LocalTranslator
 import io.pixgo.app.data.i18n.contentLangFor
@@ -47,7 +48,6 @@ import io.pixgo.app.ui.common.ContentCardCell
 import io.pixgo.app.ui.common.PxButton
 import io.pixgo.app.ui.common.PxContentGridSkeleton
 import io.pixgo.app.ui.common.PxEmptyState
-import io.pixgo.app.ui.common.PxLoadingRing
 import io.pixgo.app.ui.common.PxSectionHeader
 import io.pixgo.app.ui.common.PxTrendingSkeleton
 import io.pixgo.app.ui.common.cells
@@ -89,12 +89,15 @@ fun HomeScreen(
     var trendingLoading by remember { mutableStateOf(true) }
     var loadingMore by remember { mutableStateOf(false) }
     var reloadKey by remember { mutableStateOf(0) }
+    // Falha REAL depois de muita paciência (≠ feed vazio): erro + "Tentar novamente".
+    var failed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val myList = io.pixgo.app.ui.common.rememberMyList(catalogRepository, activeProfileId)
 
     // Carga inicial — reinicia tudo quando o perfil activo / idioma muda.
     LaunchedEffect(activeProfileId, uiLang, reloadKey) {
         loading = true
+        failed = false
         trendingLoading = true
         page = 1
         hasMore = true
@@ -102,19 +105,26 @@ fun HomeScreen(
         continueW = emptyList()
         val contentLang = contentLangFor(uiLang)
         coroutineScope {
-            // Carrossel: falha silenciosa — sem ele a home funciona como antes.
+            // Carrossel: opcional — se falhar (depois de esperar) a home funciona sem ele.
             launch {
-                trending = runCatching { catalogRepository.loadTrending(activeProfileId, contentLang) }
+                trending = runCatchingNonCancel { catalogRepository.loadTrending(activeProfileId, contentLang) }
                     .getOrDefault(emptyList())
                 trendingLoading = false
             }
-            val first = runCatching { catalogRepository.loadHomePage(1, activeProfileId, contentLang) }
-                .getOrDefault(emptyList())
-            feed = first
-            hasMore = first.size == CatalogRepository.ITEMS_LIMIT
+            // runCatchingNonCancel: quando o perfil/idioma resolve e este efeito reinicia, o
+            // cancelamento NÃO pode virar "feed vazio" (era o "nenhum conteúdo" a piscar).
+            val first = runCatchingNonCancel { catalogRepository.loadHomePage(1, activeProfileId, contentLang) }.getOrNull()
+            if (first != null) {
+                feed = first
+                hasMore = first.size == CatalogRepository.ITEMS_LIMIT
+            } else {
+                feed = emptyList()
+                hasMore = false
+                failed = true
+            }
             loading = false
             launch {
-                continueW = runCatching { catalogRepository.continueWatching() }.getOrDefault(emptyList())
+                continueW = runCatchingNonCancel { catalogRepository.continueWatching() }.getOrDefault(emptyList())
             }
         }
     }
@@ -124,7 +134,7 @@ fun HomeScreen(
         loadingMore = true
         scope.launch {
             val next = page + 1
-            val more = runCatching {
+            val more = runCatchingNonCancel {
                 catalogRepository.loadHomePage(next, activeProfileId, contentLangFor(uiLang))
             }.getOrNull()
             if (more != null) {
@@ -154,8 +164,9 @@ fun HomeScreen(
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             PxEmptyState(
                 icon = Icons.Filled.TvOff,
-                title = t.t("home.noContent"),
-                description = t.t("home.noContentDesc"),
+                // Só diz "sem conteúdo" quando o servidor RESPONDEU vazio; falha = erro de ligação.
+                title = if (failed) t.t("errors.networkError") else t.t("home.noContent"),
+                description = if (failed) t.t("errors.generic") else t.t("home.noContentDesc"),
                 action = {
                     PxButton(text = t.t("common.retry"), onClick = { reloadKey++ }, modifier = Modifier.padding(top = 12.dp))
                 }
@@ -215,9 +226,9 @@ fun HomeScreen(
         item(span = { GridItemSpan(maxLineSpan) }, key = "sentinel") {
             LaunchedEffect(feed.size, hasMore) { if (hasMore) loadMore() }
             if (loadingMore) {
-                Box(Modifier.fillMaxWidth().padding(vertical = 22.dp), contentAlignment = Alignment.Center) {
-                    PxLoadingRing(size = 20.dp, stroke = 2.dp, durationMs = 700)
-                }
+                // Skeleton (mesmo cartão do carregamento inicial) em vez de spinner:
+                // a página só usa skeletons para "a carregar".
+                PxContentGridSkeleton(count = 6, modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
             } else {
                 Box(Modifier.height(1.dp))
             }

@@ -75,7 +75,8 @@ import io.pixgo.app.ui.theme.Px
  *  - "Melhor valor" = plano annual, salvo override `highlight`
  *    (no web chega via ?highlight= do RateLimitModal; aqui é o plano
  *    sugerido passado por quem abre a tela — mesmo mecanismo);
- *  - isMZN (currency==='MZN' num dos planos) → só M-Pesa nos métodos;
+ *  - isMZN (currency==='MZN' num dos planos) → métodos do gateway activo (`methods`
+ *    vindos do hub: M-Pesa, ou M-Pesa + e-Mola — decididos pela env MZ_GATEWAY do api-core);
  *    senão Pix/Visa/Mastercard/Boleto (mesmos SVGs oficiais de
  *    public/payment-icons, copiados para assets/payment-icons);
  *  - "Assinar" → window.location.href = HUB_CHECKOUT_URL?plan=&return_to=.
@@ -94,6 +95,7 @@ private val PAYMENT_METHODS = listOf(
     PaymentMethod("Boleto", "payment-icons/boleto.svg"),
 )
 private val MPESA_METHOD = PaymentMethod("M-Pesa", "payment-icons/M-PESA_LOGO-01.svg")
+private val EMOLA_METHOD = PaymentMethod("e-Mola", "payment-icons/emola.svg")
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -119,7 +121,14 @@ fun PlansScreen(
     }
 
     val isMZN = plans.any { it.currency == "MZN" }
-    val paymentMethods = if (isMZN) listOf(MPESA_METHOD) else PAYMENT_METHODS
+    // Métodos do gateway activo em MZ, como o hub os manda (nunca decididos aqui).
+    val mzCodes = plans.firstNotNullOfOrNull { it.methods }.orEmpty()
+    val mzMethods = buildList {
+        add(MPESA_METHOD)
+        if ("emola" in mzCodes) add(EMOLA_METHOD)
+    }
+    val paymentMethods = if (isMZN) mzMethods else PAYMENT_METHODS
+    val payWithKey = if (isMZN && "emola" in mzCodes) "plans.payWithMpesaEmola" else "plans.payWithMpesa"
 
     fun handleSubscribe(planId: String) {
         // Equivalente ao returnTo do original (`${origin}${pathname}${search}`
@@ -149,13 +158,15 @@ fun PlansScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    AsyncImage(
-                        model = "file:///android_asset/${MPESA_METHOD.asset}",
-                        contentDescription = "M-Pesa",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.height(26.dp),
-                    )
-                    Text(t.t("plans.payWithMpesa"), color = Px.TextLight, fontSize = 13.6.sp, fontWeight = FontWeight.SemiBold)
+                    mzMethods.forEach { m ->
+                        AsyncImage(
+                            model = "file:///android_asset/${m.asset}",
+                            contentDescription = m.name,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.height(26.dp),
+                        )
+                    }
+                    Text(t.t(payWithKey), color = Px.TextLight, fontSize = 13.6.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }

@@ -45,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,6 +81,7 @@ import io.pixgo.app.ui.common.PxBadgeKind
 import io.pixgo.app.ui.common.PxBtnSize
 import io.pixgo.app.ui.common.PxBtnVariant
 import io.pixgo.app.ui.common.PxButton
+import io.pixgo.app.ui.common.PxPlayerSkeleton
 import io.pixgo.app.ui.common.PxWatchDetailsSkeleton
 import io.pixgo.app.ui.common.rememberFullscreenState
 import io.pixgo.app.ui.common.pxTap
@@ -98,6 +100,7 @@ import kotlin.math.roundToInt
 // Uma view conta depois de ~30s realmente reproduzidos (ou metade do vídeo se durar < 1 min)
 // — VIEW_MIN_WATCH_SEC de watch/[id]/page.tsx.
 private const val VIEW_MIN_WATCH_SEC = 30
+private val EPISODIC_TYPES = setOf("series", "anime", "dorama")
 // O original soma deltas < 2.5s do 'timeupdate' (~4 Hz); aqui o PlayerScreen chama
 // onTimeUpdate a cada ~5s enquanto reproduz, por isso o salto máximo aceite sobe
 // para 8s (saltos/seek maiores e recuos não somam, tal como no original).
@@ -140,16 +143,28 @@ fun WatchScreen(
     val scope = rememberCoroutineScope()
     val contentLang = contentLangFor(uiLang)
 
-    var detail by remember(contentId) { mutableStateOf<ContentDetail?>(null) }
-    var loading by remember(contentId) { mutableStateOf(true) }
-    var recommendations by remember(contentId) { mutableStateOf<List<ContentItem>>(emptyList()) }
+    // Conteúdo em reprodução. Começa no contentId recebido e muda DENTRO desta tela ao
+    // tocar num recomendado (o player abre o novo conteúdo directo, sem fechar/reabrir a
+    // Watch); Voltar regressa ao anterior, como no YouTube / router.push do web.
+    var viewId by remember(contentId) { mutableStateOf(contentId) }
+    val reqEpisode: String? = if (viewId == contentId) episodeId else null
+    // Tipo conhecido pelo card tocado: filmes/documentários arrancam o player já; séries
+    // esperam pelo episódio (o web só monta o player depois de ter o conteúdo e o episódio).
+    var typeHint by remember(contentId) { mutableStateOf<String?>(null) }
+    val history = remember(contentId) { mutableStateListOf<String>() }
+    var reloadKey by remember { mutableIntStateOf(0) }
+    var loadFailed by remember(viewId) { mutableStateOf(false) }
+
+    var detail by remember(viewId) { mutableStateOf<ContentDetail?>(null) }
+    var loading by remember(viewId) { mutableStateOf(true) }
+    var recommendations by remember(viewId) { mutableStateOf<List<ContentItem>>(emptyList()) }
 
     // activeEp/activeSeason do original.
-    var activeEp by remember(contentId) { mutableStateOf<Episode?>(null) }
-    var activeSeason by remember(contentId) { mutableIntStateOf(0) }
+    var activeEp by remember(viewId) { mutableStateOf<Episode?>(null) }
+    var activeSeason by remember(viewId) { mutableIntStateOf(0) }
 
     // Minha Lista optimistic (toggleList: UI imediata, revert se o pedido falhar).
-    var inList by remember(contentId) { mutableStateOf(false) }
+    var inList by remember(viewId) { mutableStateOf(false) }
     var toast by remember { mutableStateOf<String?>(null) }
 
     // Modais — dados SEMPRE vindos do body real do backend (nunca hardcoded).
@@ -162,26 +177,32 @@ fun WatchScreen(
     val fullscreen = fs.isFullscreen
     val fsS by rememberUpdatedState(fs)
     val onCloseS by rememberUpdatedState(onClose)
-    // Voltar: sai do ecrã inteiro; senão fecha a Watch (nunca sai da app).
-    BackHandler { if (fsS.isFullscreen) fsS.toggle() else onCloseS() }
+    // Voltar: sai do ecrã inteiro; depois regressa ao conteúdo anterior; por fim fecha a
+    // Watch (nunca sai da app).
+    val goBack: () -> Unit = {
+        if (fsS.isFullscreen) fsS.toggle()
+        else if (history.isNotEmpty()) { typeHint = null; viewId = history.removeAt(history.lastIndex) }
+        else onCloseS()
+    }
+    BackHandler { goBack() }
     var sessionReplaced by remember { mutableStateOf<String?>(null) }
 
     // Throttle do heartbeat de progresso (lastProgressSave/lastProgressPct do original).
-    var lastSaveAt by remember(contentId) { mutableLongStateOf(0L) }
-    var lastPct by remember(contentId) { mutableIntStateOf(-1) }
+    var lastSaveAt by remember(viewId) { mutableLongStateOf(0L) }
+    var lastPct by remember(viewId) { mutableIntStateOf(-1) }
 
     // Views: total devolvido pelo servidor depois de contar (substitui detail.views no ecrã).
     // Reiniciam por conteúdo (não por episódio), como o efeito [id] do original.
-    var liveViews by remember(contentId) { mutableStateOf<Long?>(null) }
-    var viewSent by remember(contentId) { mutableStateOf(false) }
-    var watchedSec by remember(contentId) { mutableIntStateOf(0) }
-    var lastCurSec by remember(contentId) { mutableIntStateOf(-1) }
+    var liveViews by remember(viewId) { mutableStateOf<Long?>(null) }
+    var viewSent by remember(viewId) { mutableStateOf(false) }
+    var watchedSec by remember(viewId) { mutableIntStateOf(0) }
+    var lastCurSec by remember(viewId) { mutableIntStateOf(-1) }
 
     // Estado do download deste conteúdo — motor + store nativos (réplica
     // de startDownload() em lib/downloads.ts; ver DownloadEngine.kt).
     val downloadStore = remember { io.pixgo.app.data.download.DownloadStore(context) }
     val downloadEngine = remember { io.pixgo.app.data.download.DownloadEngine(context) }
-    val downloadKey = io.pixgo.app.data.download.DownloadStore.keyFor(contentId, episodeId)
+    val downloadKey = io.pixgo.app.data.download.DownloadStore.keyFor(viewId, reqEpisode)
     var dlMeta by remember(downloadKey) {
         mutableStateOf<io.pixgo.app.data.download.DownloadMeta?>(null)
     }
@@ -193,31 +214,65 @@ fun WatchScreen(
         }
     }
 
-    LaunchedEffect(contentId) {
+    LaunchedEffect(viewId, reloadKey) {
         loading = true
+        loadFailed = false
+        // Distingue 3 casos (antes tudo virava "não encontrado"):
+        //  - cancelamento (ecrã/perfil mudou)  → relança, nunca é erro;
+        //  - 404 real do servidor (null)       → "não encontrado";
+        //  - falha de rede/5xx depois de MUITA paciência (exceção) → erro de ligação + tentar novamente.
+        var transientFail = false
         val d = try {
-            catalogRepository.content(contentId, contentLang, authState.activeProfileId)
-        } catch (e: Exception) { null }
+            catalogRepository.content(viewId, contentLang, authState.activeProfileId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) { transientFail = true; null }
         loading = false
-        if (d == null) { toast = t.t("errors.notFound"); return@LaunchedEffect }
+        if (d == null) {
+            toast = if (transientFail) t.t("errors.networkError") else t.t("errors.notFound")
+            loadFailed = true
+            return@LaunchedEffect
+        }
         detail = d
         val episodic = d.type == "series" || d.type == "anime" || d.type == "dorama"
         if (episodic && d.seasons.isNotEmpty()) {
             val allEps = d.seasons.flatMap { s -> s.episodes }
-            val ep = episodeId?.let { want -> allEps.find { it.id == want } } ?: allEps.firstOrNull()
+            val ep = reqEpisode?.let { want -> allEps.find { it.id == want } } ?: allEps.firstOrNull()
             activeEp = ep
             ep?.let { e ->
                 val si = d.seasons.indexOfFirst { s -> s.episodes.any { it.id == e.id } }
                 if (si >= 0) activeSeason = si
             }
         }
+        // Miniaturas dos episódios: o web pede o conteúdo SEM idioma explícito (contentApi.get
+        // usa lang='en') e recebe ep.poster; em lang=pt o servidor pode devolver os episódios
+        // sem poster. Só quando faltam, completa-se por id a partir da versão 'en'
+        // (cache de 3 min partilhado, um único pedido extra e nunca bloqueia o player).
+        if (episodic && d.seasons.any { s -> s.episodes.any { it.poster.isNullOrBlank() } }) {
+            launch {
+                val en = io.pixgo.app.data.network.runCatchingNonCancel { catalogRepository.content(viewId, "en", authState.activeProfileId) }.getOrNull()
+                val posters = en?.seasons?.flatMap { it.episodes }
+                    ?.filter { !it.poster.isNullOrBlank() }
+                    ?.associate { it.id to it.poster }
+                    .orEmpty()
+                if (posters.isNotEmpty()) {
+                    detail = d.copy(seasons = d.seasons.map { s ->
+                        s.copy(episodes = s.episodes.map { e ->
+                            if (e.poster.isNullOrBlank()) e.copy(poster = posters[e.id]) else e
+                        })
+                    })
+                }
+            }
+        }
         if (authState.user != null) {
             // in_list embutido quando profile_id foi junto; senão check separado.
-            inList = d.inListRaw ?: catalogRepository.checkMyList(contentId, authState.activeProfileId)
-            catalogRepository.seedMyList(listOf(contentId), inList)
+            inList = d.inListRaw ?: catalogRepository.checkMyList(viewId, authState.activeProfileId)
+            catalogRepository.seedMyList(listOf(viewId), inList)
         }
         recommendations = try {
-            catalogRepository.recommended(contentId, authState.activeProfileId, contentLang)
+            catalogRepository.recommended(viewId, authState.activeProfileId, contentLang)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) { emptyList() }
     }
 
@@ -234,7 +289,7 @@ fun WatchScreen(
     // remember: a instância tem de ser estável, porque o PlayerScreen reinicia o
     // ciclo de 5s do onTimeUpdate sempre que a lambda muda.
     val loggedIn = authState.user != null
-    val countView: (Int, Int) -> Unit = remember(contentId, offline, loggedIn) {
+    val countView: (Int, Int) -> Unit = remember(viewId, offline, loggedIn) {
         { curSec, durSec ->
             if (loggedIn && !offline && !viewSent) {
                 val delta = curSec - lastCurSec
@@ -244,7 +299,7 @@ fun WatchScreen(
                 if (watchedSec >= needed) {
                     viewSent = true
                     scope.launch {
-                        val r = catalogRepository.registerView(contentId)
+                        val r = catalogRepository.registerView(viewId)
                         if (r == null) {
                             // tenta de novo daqui a ~5s de reprodução (.catch do original)
                             viewSent = false
@@ -258,13 +313,21 @@ fun WatchScreen(
         }
     }
 
+    // O player só monta quando já se sabe QUAL stream pedir. Antes montava logo: numa série o
+    // handshake saía sem `episode` e o servidor respondia "stream metadata not found". O web só
+    // renderiza o player depois de ter o conteúdo e o episódio activo.
+    val hint = typeHint
+    val playerReady = offline ||
+        (hint != null && hint !in EPISODIC_TYPES) ||
+        (!loading && detail != null && (!isEpisodic || activeEp != null || detail?.seasons.isNullOrEmpty()))
+
     Box(Modifier.fillMaxSize().background(if (fullscreen) Color.Black else Px.BgDark)) {
         Column(Modifier.fillMaxSize()) {
 
             // ── Voltar (btn-ghost btn-sm do topo da página) — só em retrato ──
             if (!fullscreen) {
                 Row(
-                    Modifier.clickable(onClick = onClose).padding(horizontal = 16.dp, vertical = 12.dp),
+                    Modifier.clickable(onClick = goBack).padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(Icons.Filled.ArrowBack, contentDescription = null, tint = Px.TextLight, modifier = Modifier.size(18.dp))
@@ -281,10 +344,11 @@ fun WatchScreen(
                 if (fullscreen) Modifier.weight(1f).fillMaxWidth().background(Color.Black)
                 else Modifier.fillMaxWidth().aspectRatio(16f / 9f).background(Color.Black)
             ) {
-                key(contentId, activeEp?.id ?: episodeId) {
+                if (playerReady) {
+                key(viewId, activeEp?.id ?: reqEpisode) {
                     PlayerScreen(
-                        contentId = contentId,
-                        episodeId = activeEp?.id ?: episodeId,
+                        contentId = viewId,
+                        episodeId = activeEp?.id ?: reqEpisode,
                         onClose = onClose,
                         offline = offline,
                         onTimeUpdate = { curSec, durSec ->
@@ -300,7 +364,7 @@ fun WatchScreen(
                                 if (pct == lastPct) return@run
                                 lastSaveAt = now; lastPct = pct
                                 val epId = activeEp?.id
-                                scope.launch { catalogRepository.updateProgress(pid, contentId, epId, pct, durSec) }
+                                scope.launch { catalogRepository.updateProgress(pid, viewId, epId, pct, durSec) }
                             }
                         },
                         fullscreen = fullscreen,
@@ -325,6 +389,30 @@ fun WatchScreen(
                             }
                         } else null
                     )
+                }
+                } else if (loadFailed) {
+                    Column(
+                        Modifier.fillMaxSize().padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Text(t.t("errors.networkError"), color = Color.White, fontSize = 13.sp)
+                        PxButton(
+                            text = t.t("common.retry"),
+                            onClick = { reloadKey++ },
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                    }
+                } else {
+                    PxPlayerSkeleton()
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            trackColor = Color(0x33FFFFFF),
+                            strokeWidth = 3.dp,
+                            modifier = Modifier.size(44.dp),
+                        )
+                    }
                 }
             }
 
@@ -401,12 +489,12 @@ fun WatchScreen(
                                 if (pid == null) { toast = "Perfil não encontrado."; return@ActionChip }
                                 val was = inList
                                 inList = !was
-                                catalogRepository.seedMyList(listOf(contentId), !was)
+                                catalogRepository.seedMyList(listOf(viewId), !was)
                                 toast = if (!was) t.t("myList.added") else t.t("myList.removed")
                                 scope.launch {
-                                    val ok = if (was) catalogRepository.removeFromMyList(pid, contentId)
-                                    else catalogRepository.addToMyList(pid, contentId)
-                                    if (!ok) { inList = was; catalogRepository.seedMyList(listOf(contentId), was); toast = t.t("errors.networkError") }
+                                    val ok = if (was) catalogRepository.removeFromMyList(pid, viewId)
+                                    else catalogRepository.addToMyList(pid, viewId)
+                                    if (!ok) { inList = was; catalogRepository.seedMyList(listOf(viewId), was); toast = t.t("errors.networkError") }
                                 }
                             }
                         )
@@ -431,7 +519,7 @@ fun WatchScreen(
                                 }
                                 scope.launch {
                                     when (val r = downloadEngine.start(
-                                        contentId, activeEp?.id ?: episodeId,
+                                        viewId, activeEp?.id ?: reqEpisode,
                                         d.displayTitle, d.displayPoster ?: ""
                                     )) {
                                         is io.pixgo.app.data.download.DownloadStart.Started ->
@@ -454,7 +542,7 @@ fun WatchScreen(
                             ghost = true,
                             onClick = {
                                 // navigator.clipboard web → share-sheet nativo do link do conteúdo.
-                                val url = "https://pixgo.qzz.io/main/watch/$contentId"
+                                val url = "https://pixgo.qzz.io/main/watch/$viewId"
                                 val send = Intent(Intent.ACTION_SEND)
                                     .setType("text/plain")
                                     .putExtra(Intent.EXTRA_TEXT, url)
@@ -468,7 +556,7 @@ fun WatchScreen(
                     // expande tudo (com rolagem própria para não empurrar a página).
                     val desc = d.displayDescription
                     if (!desc.isNullOrBlank()) {
-                        var expanded by remember(contentId, activeEp?.id) { mutableStateOf(false) }
+                        var expanded by remember(viewId, activeEp?.id) { mutableStateOf(false) }
                         CardBox(padding = PaddingValues(horizontal = 14.dp, vertical = 9.dp)) {
                             Column(
                                 Modifier.fillMaxWidth().pxTap { expanded = !expanded }
@@ -554,7 +642,17 @@ fun WatchScreen(
                         Text("Sem recomendações disponíveis.", color = Px.TextMuted, fontSize = 12.8.sp)
                     } else {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            recommendations.forEach { item -> RecommendCard(item) { onOpenRecommendation(item.id) } }
+                            recommendations.forEach { item ->
+                                RecommendCard(item) {
+                                    if (offline) onOpenRecommendation(item.id)
+                                    else {
+                                        // Abre no player directo, na própria Watch.
+                                        history.add(viewId)
+                                        typeHint = item.type
+                                        viewId = item.id
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -707,9 +805,11 @@ private fun EpisodeRow(ep: Episode, playing: Boolean, onClick: () -> Unit) {
             Modifier.size(width = 72.dp, height = 40.dp).clip(RoundedCornerShape(4.dp)).background(Px.BgDarker),
             contentAlignment = Alignment.Center
         ) {
-            if (!ep.poster.isNullOrBlank()) {
+            var imgErr by remember(ep.poster) { mutableStateOf(false) }
+            if (!ep.poster.isNullOrBlank() && !imgErr) {
                 AsyncImage(
                     model = ep.poster, contentDescription = null,
+                    onError = { imgErr = true },
                     modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop
                 )
             } else {

@@ -103,19 +103,45 @@ object ChannelsSource {
         val tvgId: String, val country: String, val language: String
     )
 
-    private suspend fun fetchText(url: String): String = withContext(Dispatchers.IO) {
+    private suspend fun fetchTextOnce(url: String): String = withContext(Dispatchers.IO) {
         client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
             if (!resp.isSuccessful) throw java.io.IOException("HTTP ${resp.code}")
             resp.body?.string() ?: ""
         }
     }
 
+    /**
+     * Paciência igual à do `fetch()` do navegador (que nunca desiste sozinho): o jsDelivr/rede
+     * falham de vez em quando e a segunda tentativa funciona. Só depois de [budgetMs] é que
+     * se lança LoadFailedException (a UI mostra "Tentar novamente", nunca "sem canais").
+     */
+    private suspend fun fetchText(url: String, budgetMs: Long = io.pixgo.app.data.network.Patience.MAIN_BUDGET_MS): String {
+        val deadline = System.currentTimeMillis() + budgetMs
+        var attempt = 0
+        var last: Exception? = null
+        while (true) {
+            try {
+                return fetchTextOnce(url)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+            }
+            val wait = io.pixgo.app.data.network.Patience.delayFor(attempt++)
+            if (System.currentTimeMillis() + wait >= deadline) break
+            kotlinx.coroutines.delay(wait)
+        }
+        throw io.pixgo.app.data.network.LoadFailedException("Playlist indisponível após $attempt tentativas", last)
+    }
+
     private suspend fun fetchAndParse(): List<RawChannel> {
         val playlistText = fetchText(PLAYLIST_URL)
         val logosMap: Map<String, String> = try {
-            val logosText = fetchText(LOGOS_URL)
+            val logosText = fetchText(LOGOS_URL, io.pixgo.app.data.network.Patience.OPTIONAL_BUDGET_MS)
             val json = Json.parseToJsonElement(logosText) as? JsonObject ?: JsonObject(emptyMap())
             json.mapValues { (_, v) -> (v as? JsonPrimitive)?.content ?: "" }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             emptyMap()
         }

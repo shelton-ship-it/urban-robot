@@ -47,27 +47,70 @@ class PlayerRepository(private val context: Context) {
 
     companion object {
         const val HEARTBEAT_INTERVAL_MS = 120_000L
+        private const val GENERIC_FAIL = "Não foi possível iniciar a reprodução. Verifique a ligação e tente novamente."
     }
 
     suspend fun handshake(contentId: String, episodeId: String?): StreamHandshakeResult {
         val clientPubKey = EcdhKeyExchange.generateClientPubKeyBase64()
         val params = mutableMapOf("clientPubKey" to clientPubKey)
         episodeId?.let { params["episode"] = it }
-        return try {
-            val resp = api.stream(contentId, params)
-            when {
-                resp.isSuccessful -> resp.body()?.let { StreamHandshakeResult.Ok(it) }
-                    ?: StreamHandshakeResult.Error("Resposta vazia do servidor.")
-                resp.code() == 429 -> {
-                    val err = parseErrorBody(resp.errorBody()?.string())
-                    StreamHandshakeResult.FreeTimeExhausted(err?.message, err?.plans ?: emptyList())
+
+        // Resiliência (redes lentas / edge functions "frias"): a rota /stream é
+        // só-leitura (não acumula tempo de visualização), logo repetir é seguro.
+        //
+        // O web (performECDH) nunca mostra o texto cru do servidor ao utilizador e o
+        // hls.js recupera sozinho de falhas de rede. Aqui, qualquer falha que NÃO seja
+        // definitiva (HTTP 404/408/5xx, corpo sem master_url, erro de rede, timeout)
+        // é tratada como transitória: repete durante até PLAYER_BUDGET_MS (90 s) com
+        // espera crescente (0,4 → 5 s), mantendo o spinner na UI — antes eram só 4
+        // tentativas (~5 s) e o erro saía cedo demais (o KV/Turso "frio" do backend
+        // responde 500/404 transitório e à segunda tentativa já funciona). Só 429
+        // (limite de plano) e 401/403 (resposta definitiva) saem logo. A mensagem final é
+        // SEMPRE a genérica — nunca "stream metadata not found" / "failed to get stream url".
+        var last: StreamHandshakeResult = StreamHandshakeResult.Error(GENERIC_FAIL)
+        val deadline = System.currentTimeMillis() + io.pixgo.app.data.network.Patience.PLAYER_BUDGET_MS
+        var attempt = 0
+        while (true) {
+            if (attempt > 0) delay(io.pixgo.app.data.network.Patience.delayFor(attempt - 1))
+            try {
+                val resp = api.stream(contentId, params)
+                val code = resp.code()
+                when {
+                    resp.isSuccessful -> {
+                        val body = resp.body()
+                        if (body != null && body.masterUrl.isNotBlank()) return StreamHandshakeResult.Ok(body)
+                        // Equivalente ao `throw new Error('No stream URL')` do web — aqui tentamos de novo.
+                        android.util.Log.e("PixGoPlayer", "stream sem master_url (tentativa ${attempt + 1})")
+                        last = StreamHandshakeResult.Error(GENERIC_FAIL)
+                    }
+                    code == 429 -> {
+                        val err = parseErrorBody(resp.errorBody()?.string())
+                        return StreamHandshakeResult.FreeTimeExhausted(err?.message, err?.plans ?: emptyList())
+                    }
+                    code == 401 || code == 403 -> {
+                        val msg = parseErrorBody(resp.errorBody()?.string())?.message
+                        return StreamHandshakeResult.Error(msg ?: GENERIC_FAIL)
+                    }
+                    else -> {
+                        val serverMsg = parseErrorBody(resp.errorBody()?.string())?.message
+                        android.util.Log.e("PixGoPlayer", "stream HTTP $code (tentativa ${attempt + 1}): $serverMsg")
+                        last = StreamHandshakeResult.Error(
+                            GENERIC_FAIL +
+                                if (io.pixgo.app.BuildConfig.DEBUG) "\n[debug] HTTP $code: ${serverMsg ?: "-"}" else ""
+                        )
+                    }
                 }
-                else -> StreamHandshakeResult.Error(
-                    parseErrorBody(resp.errorBody()?.string())?.message ?: "Erro ${resp.code()} ao iniciar reprodução."
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e   // o ecrã saiu / mudou de episódio: não é uma falha
+            } catch (e: Exception) {
+                android.util.Log.e("PixGoPlayer", "stream falhou (tentativa ${attempt + 1})", e)
+                last = StreamHandshakeResult.Error(
+                    GENERIC_FAIL +
+                        if (io.pixgo.app.BuildConfig.DEBUG) "\n[debug] ${e.javaClass.simpleName}: ${e.message ?: ""}" else ""
                 )
             }
-        } catch (e: Exception) {
-            StreamHandshakeResult.Error("Falha de rede.")
+            attempt++
+            if (System.currentTimeMillis() >= deadline) return last
         }
     }
 

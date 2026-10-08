@@ -204,6 +204,8 @@ class AuthRepository(private val context: Context) {
                 billingCycle = io.pixgo.app.data.model.planCycle(p.id),
                 currency = p.currency,
                 gateway = p.gateway,
+                processor = p.processor,
+                methods = p.methods,
             )
         }
     }

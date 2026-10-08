@@ -70,7 +70,10 @@ import io.pixgo.app.ui.common.PxButton
 import io.pixgo.app.ui.common.PxEmptyState
 import io.pixgo.app.ui.common.PxLoadingRing
 import io.pixgo.app.ui.theme.Px
+import androidx.compose.foundation.layout.offset
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 /**
  * Excepção deliberada e única à regra "sem WebView a encapsular a app" —
@@ -108,8 +111,13 @@ import kotlinx.coroutines.delay
  *  - depois de pagar, CheckoutStatusPage do hub faz
  *    window.location.href = return_to (+px_paid) = o SITE pixgo.qzz.io, que
  *    carregava inteiro dentro da WebView. Agora essa navegação é interceptada
- *    (host do `return_to` do próprio URL de checkout) e fecha a sheet; quem
- *    abriu revalida o plano (invalidateMeCacheAfterPayment).
+ *    (host do `return_to` do próprio URL de checkout) e chama `onPaid` (num APK
+ *    não há "site" para onde voltar: quem abriu fecha a sheet, revalida o plano
+ *    com invalidateMeCacheAfterPayment e leva a pessoa à HOME). `onClose` fica
+ *    só para o X / botão voltar (cancelar), que não muda de ecrã.
+ *    A interceção só vê navegações do frame PRINCIPAL; por isso a Thank You Page
+ *    carregada dentro do iframe da caixa Hotmart navega `window.top`
+ *    (CheckoutStatusPage.tsx), senão o site abriria dentro da caixa.
  *  - só em debug: console.log da página e navegações vão para o logcat
  *    (tag PixGoCheckout) e a WebView fica visível em chrome://inspect.
  */
@@ -118,16 +126,23 @@ import kotlinx.coroutines.delay
 // impõe limite. Teto absoluto de segurança para nunca ficar em spinner eterno.
 private const val LOAD_IDLE_TIMEOUT_MS = 45_000L
 private const val LOAD_HARD_CAP_MS = 180_000L
+// Depois de a página "terminar" (progress 100) ainda espera o spinner da própria página
+// desaparecer; teto para nunca ficar preso por cima do conteúdo.
+private const val CONTENT_READY_CAP_MS = 8_000L
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun FastWebViewSheet(url: String, onClose: () -> Unit) {
+fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onClose) {
     val tr = LocalTranslator.current
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var attempt by remember { mutableIntStateOf(0) }        // muda => WebView nova (retry / render morto)
     var progress by remember { mutableIntStateOf(0) }
     var pageReady by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
+    // O anel NATIVO só sai quando o anel da própria página (.loading-ring do hub) já não existe:
+    // antes, ao chegar a 100 % o nativo desaparecia e via-se o spinner da página, que não coincide
+    // com o centro da tela. Assim há um único spinner, sempre no mesmo sítio, até haver conteúdo.
+    var contentReady by remember { mutableStateOf(false) }
     var popup by remember { mutableStateOf<WebView?>(null) }
 
     // Host para onde o hub devolve a pessoa depois de pagar (return_to do próprio URL).
@@ -164,6 +179,24 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit) {
                 break
             }
         }
+    }
+
+    LaunchedEffect(pageReady, attempt) {
+        if (!pageReady) { contentReady = false; return@LaunchedEffect }
+        delay(400L) // deixa a página hidratar antes da 1.ª leitura
+        var waited = 0L
+        var goneInARow = 0
+        while (waited < CONTENT_READY_CAP_MS && goneInARow < 2) {
+            val wv = webViewRef ?: break
+            val gone = suspendCancellableCoroutine<Boolean> { cont ->
+                wv.evaluateJavascript("(function(){return document.querySelector('.loading-ring')===null;})()") { r ->
+                    if (cont.isActive) cont.resume(r == "true")
+                }
+            }
+            goneInARow = if (gone) goneInARow + 1 else 0
+            if (goneInARow < 2) { delay(150L); waited += 150L }
+        }
+        contentReady = true
     }
 
     DisposableEffect(Unit) {
@@ -239,7 +272,7 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit) {
                                     }
                                     child.webViewClient = checkoutClient(
                                         returnHost = returnHost,
-                                        onReturn = onClose,
+                                        onReturn = onPaid,
                                         onMainFrameError = {},
                                     )
                                     transport.webView = child
@@ -252,7 +285,7 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit) {
 
                             webViewClient = checkoutClient(
                                 returnHost = returnHost,
-                                onReturn = onClose,
+                                onReturn = onPaid,
                                 onMainFrameError = { failed = true },
                                 onStarted = { failed = false },
                                 onFinished = { if (!failed) pageReady = true },
@@ -296,12 +329,14 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit) {
             // Nome totalmente qualificado: dentro de Column > Box, o import resolvia para
             // ColumnScope.AnimatedVisibility, bloqueado pelo BoxScope (@LayoutScopeMarker).
             androidx.compose.animation.AnimatedVisibility(
-                visible = !pageReady && !failed,
+                visible = !contentReady && !failed,
                 exit = fadeOut(),
                 modifier = Modifier.fillMaxSize()
             ) {
                 Box(Modifier.fillMaxSize().background(Px.BgDark), contentAlignment = Alignment.Center) {
-                    PxLoadingRing()
+                    // -24dp = metade da barra nativa de 48dp: o anel fica no centro REAL do ecrã
+                    // (barra + conteúdo), não do rectângulo abaixo da barra.
+                    Box(Modifier.offset(y = (-24).dp)) { PxLoadingRing() }
                 }
             }
 
@@ -318,6 +353,7 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit) {
                                     onClick = {
                                         failed = false
                                         pageReady = false
+                                        contentReady = false
                                         progress = 0
                                         attempt++
                                     }

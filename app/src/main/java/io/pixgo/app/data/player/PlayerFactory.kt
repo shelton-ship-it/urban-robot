@@ -6,6 +6,9 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -25,8 +28,8 @@ import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
  *  maxBufferLength 60s (lowRam 20s)              →  maxBuffer 60s (lowRam 30s)
  *  maxMaxBufferLength 120s (lowRam 30s)          →  teto do buffer (lowRam 30s)
  *  backBufferLength 30s (lowRam 10s)             →  setBackBuffer 30s (10s)
- *  fragLoadingMaxRetry 4 / retryDelay 500ms      →  HlsRetryPolicy (4 retries, 500ms·2^n, máx 64s)
- *  frag/manifest/levelLoadingTimeOut 20s         →  OkHttp callTimeout 20s (total, por tentativa)
+ *  fragLoadingMaxRetry 4 / retryDelay 500ms      →  PatientRetryPolicy (20 retries, 500ms·2^n, máx 6s)
+ *  frag/manifest/levelLoadingTimeOut 20s         →  OkHttp callTimeout 120s + 30s de inatividade
  *  (detecção de deviceMemory <= 2GB)             →  ActivityManager.isLowRamDevice/memoryClass
  *
  * Extras que o hls.js faz sozinho e o ExoPlayer só faz se for configurado:
@@ -94,28 +97,44 @@ object PlayerFactory {
     /** VOD cifrado (.bin) — HlsMediaSource + BinDecryptDataSource. */
     fun createVod(context: Context, dataSourceFactory: DataSource.Factory): ExoPlayer {
         val hls = HlsMediaSource.Factory(dataSourceFactory)
-            .setLoadErrorHandlingPolicy(HlsRetryPolicy())
+            .setLoadErrorHandlingPolicy(PatientRetryPolicy())
         return builder(context, hls).build()
     }
 
-    /** Canais ao vivo (HLS/TS abertos) — media source por defeito do Media3. */
-    fun createLive(context: Context): ExoPlayer = builder(context, null).build()
+    /**
+     * Canais ao vivo (HLS/TS abertos). Antes usava o DefaultHttpDataSource por defeito do Media3
+     * (8 s de connect/read) e a política por defeito (3 tentativas): um canal lento ou um CDN
+     * momentaneamente indisponível dava erro/ecrã preso. Agora: 30 s connect, 60 s read, redirects
+     * http↔https permitidos e a mesma política paciente do VOD.
+     */
+    fun createLive(context: Context): ExoPlayer {
+        val app = context.applicationContext
+        val http = DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(30_000)
+            .setReadTimeoutMs(60_000)
+            .setAllowCrossProtocolRedirects(true)
+        val factory = DefaultMediaSourceFactory(app)
+            .setDataSourceFactory(DefaultDataSource.Factory(app, http))
+            .setLoadErrorHandlingPolicy(PatientRetryPolicy())
+        return builder(context, factory).build()
+    }
 }
 
 /**
- * Política de retry igual à do hls.js do frontend: até 4 tentativas extra
- * (fragLoadingMaxRetry) com atraso exponencial a partir de 500 ms
- * (fragLoadingRetryDelay) — 500, 1000, 2000, 4000 ms, teto de 64 s
- * (maxRetryTimeout). Quais erros SÃO re-tentáveis continua a decidir o
- * DefaultLoadErrorHandlingPolicy (ex.: 404/ficheiro inexistente não repete);
- * aqui só se substitui o ATRASO (o padrão do ExoPlayer era 0, 1 s, 2 s, 3 s…).
+ * Política de retry PACIENTE. O hls.js do web só tinha 4 retries mas recomeçava sozinho
+ * (startLoad()) em qualquer erro fatal de rede; o ExoPlayer não — depois de esgotar as
+ * tentativas lança erro e o vídeo "encravava" como se o segmento não existisse (e ao
+ * atualizar tocava, porque a rede já tinha voltado). Agora são 20 tentativas por pedido
+ * com atraso 0,5 s → 1 → 2 → 4 → 6 s (teto), ~100 s de paciência por segmento/playlist.
+ * Quais erros SÃO re-tentáveis continua a decidir o DefaultLoadErrorHandlingPolicy
+ * (ex.: ficheiro inexistente/parser não repete); aqui só mudam a contagem e o ATRASO.
  */
 @UnstableApi
-private class HlsRetryPolicy : DefaultLoadErrorHandlingPolicy(/* minimumLoadableRetryCount = */ 4) {
+private class PatientRetryPolicy : DefaultLoadErrorHandlingPolicy(/* minimumLoadableRetryCount = */ 20) {
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val base = super.getRetryDelayMsFor(loadErrorInfo)
         if (base == C.TIME_UNSET) return base
         val n = (loadErrorInfo.errorCount - 1).coerceIn(0, 7)
-        return minOf(500L shl n, 64_000L)
+        return minOf(500L shl n, 6_000L)
     }
 }
