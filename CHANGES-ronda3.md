@@ -24,3 +24,8 @@ Causa: falha/cancelamento tratados como "lista vazia" nos clientes; a API respon
 - Spinner: estado "à espera de dados" relido do player em cada evento + relógio de 250 ms (buffering, READY sem tocar, seek, pause/play). Canais: spinner nativo desligado (era duplicado).
 - Catálogo/Início/Minha Coleção: debounce de 150 ms nas cargas (coalesce reinícios do arranque).
 - Google: app/build.gradle.kts passa a assinar o debug com app/pixgo-debug.keystore (SHA-1 estável); "cancelado" já não é silencioso.
+
+## Ronda 5
+- Ecrã inteiro (ui/common/Orientation.kt): reescrito. O bug "roda e volta a virar": ao rodar o aparelho o controlador soltava o bloqueio para UNSPECIFIED; com a rotação automática do sistema DESLIGADA isso é retrato, e o ecrã virava de volta (cada flip também reiniciava o estado do player/spinner). Agora FORCED_LANDSCAPE fica em paisagem até sair; só sai ao rodar para retrato se a rotação automática estiver ligada e o aparelho já tiver estado em paisagem (700 ms estável).
+- Spinner (PlayerScreen): deteção de "parado" (a tocar mas a posição não anda ≥0,9 s) além de BUFFERING; botões centrais nativos voltam a ser escondidos sempre que o controlador os re-mostra.
+- Catálogo: interceptor acrescenta v=2 aos GET /api/catalog* (ignora respostas degradadas que o CDN guardou 24 h).
