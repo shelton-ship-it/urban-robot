@@ -247,14 +247,19 @@ fun PlayerScreen(
     // (onPlaybackStateChanged), o estado "à espera de dados" é RELIDO do player em cada evento
     // relevante e por um relógio de 250 ms. Assim carregar num botão, seek, pausa/play, rodar o
     // ecrã ou um segmento lento nunca deixam o spinner "perdido" nem o vídeo parecer partido.
-    fun waitingNow(): Boolean {
-        val st = exoPlayer.playbackState
-        if (st == Player.STATE_BUFFERING) return true
-        return st == Player.STATE_READY && exoPlayer.playWhenReady && !exoPlayer.isPlaying &&
-            exoPlayer.playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE
-    }
+    // `stalled`: o ExoPlayer diz "a tocar" mas a posição não anda (segmento lento/rede presa,
+    // rotação do ecrã a re-criar a superfície…). O YouTube mostra spinner aqui; nós também.
+    val stalled = remember(exoPlayer) { booleanArrayOf(false) }
+    fun waitingNow(): Boolean =
+        exoPlayer.playbackState == Player.STATE_BUFFERING || stalled[0]
     LaunchedEffect(exoPlayer) {
+        var lastPos = -1L
+        var lastMove = System.currentTimeMillis()
         while (true) {
+            val now = System.currentTimeMillis()
+            val pos = exoPlayer.currentPosition
+            if (pos != lastPos || !exoPlayer.isPlaying) { lastPos = pos; lastMove = now; stalled[0] = false }
+            else if (now - lastMove >= 900L) stalled[0] = true
             val w = waitingNow()
             if (buffering != w) buffering = w
             delay(250L)
@@ -352,6 +357,13 @@ fun PlayerScreen(
     }
 
     val spinnerVisible = errorMessage == null && (loading || buffering || recovering)
+    // Estado "spinner visível" acessível a callbacks nativos + referência ao PlayerView, para
+    // re-aplicar a ocultação dos botões centrais SEMPRE que o controlador nativo os volte a
+    // mostrar (tocar num botão fazia-os reaparecer por cima do spinner → "player partido").
+    val spinnerNow = remember { booleanArrayOf(false) }
+    spinnerNow[0] = spinnerVisible
+    val pvRef = remember { arrayOfNulls<PlayerView>(1) }
+    LaunchedEffect(spinnerVisible) { pvRef[0]?.let { setCenterControlsHidden(it, spinnerVisible) } }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // O PlayerView existe SEMPRE (mesmo durante o handshake): a superfície
@@ -368,6 +380,10 @@ fun PlayerScreen(
                     // botão nativo da própria barra.
                     setShowNextButton(false)
                     setShowPreviousButton(false)
+                    pvRef[0] = this
+                    setControllerVisibilityListener(PlayerView.ControllerVisibilityListener {
+                        setCenterControlsHidden(this, spinnerNow[0])
+                    })
                 }
             },
             update = { pv ->
@@ -386,7 +402,7 @@ fun PlayerScreen(
                 // cima dele: davam a impressão de player quebrado. O spinner manda.
                 setCenterControlsHidden(pv, hidden = spinnerVisible)
             },
-            onRelease = { pv -> pv.player = null },
+            onRelease = { pv -> pv.player = null; pvRef[0] = null },
             modifier = Modifier.fillMaxSize()
         )
 

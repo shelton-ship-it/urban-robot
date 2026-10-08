@@ -113,6 +113,19 @@ object NetworkModule {
     }
 
     /**
+     * Anti-cache do catálogo (v=2). O backend respondia listas PARCIAIS com 200 e
+     * `s-maxage=86400`, e o CDN guardava essas respostas degradadas durante 24 h; mudar a URL
+     * ignora o que já ficou guardado. (O backend já não devolve listas parciais.)
+     */
+    private val catalogBustInterceptor = Interceptor { chain ->
+        val req = chain.request()
+        val url = req.url
+        if (req.method == "GET" && url.encodedPath.startsWith("/api/catalog") && url.queryParameter("v") == null) {
+            chain.proceed(req.newBuilder().url(url.newBuilder().addQueryParameter("v", "2").build()).build())
+        } else chain.proceed(req)
+    }
+
+    /**
      * Um único OkHttpClient (e portanto um único CookieJar) para TODOS os
      * pedidos aos dois hosts — equivalente a `credentials: 'include'` no
      * browser com um cookie Domain=.pixgo.qzz.io partilhado.
@@ -134,6 +147,7 @@ object NetworkModule {
                 .webLikeTimeouts()
                 .cookieJar(jar)
                 .addInterceptor(authInterceptor(tokenManager))
+                .addInterceptor(catalogBustInterceptor)
                 .addInterceptor(logging)
                 .build()
             okHttpClient = client

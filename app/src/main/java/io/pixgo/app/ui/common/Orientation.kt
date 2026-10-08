@@ -45,30 +45,52 @@ fun rememberFullscreenState(): FullscreenState {
 }
 
 /**
- * Força a orientação pedida pelo botão e SOLTA o bloqueio (volta ao automático)
- * assim que o utilizador roda fisicamente o aparelho para essa orientação —
- * evitando ficar "preso" em paisagem/retrato depois de usar o botão.
+ * Controlador do ecrã inteiro por botão. Há DOIS mecanismos de rodar o ecrã e eles não podem
+ * pisar-se (era o bug "roda e volta a virar sozinho"):
+ *  - NATIVO: rotação automática do sistema (orientação UNSPECIFIED) — o sistema decide;
+ *  - BOTÃO do player: o app força a orientação.
+ *
+ * O bug antigo: depois de forçar paisagem pelo botão, assim que o utilizador rodava o aparelho
+ * o controlador "soltava" o bloqueio (UNSPECIFIED = seguir o sistema). Com a rotação automática
+ * do sistema DESLIGADA, seguir o sistema é retrato — o ecrã virava de volta sozinho (e cada
+ * mudança de orientação reiniciava o spinner/estado do player). Agora:
+ *  - FORCED_LANDSCAPE: fica em paisagem (SENSOR_LANDSCAPE, só alterna entre as 2 paisagens)
+ *    até o utilizador SAIR (botão/voltar) — ou rodar o aparelho de volta a retrato, mas só se a
+ *    rotação automática do sistema estiver ligada E o aparelho já tiver estado fisicamente em
+ *    paisagem (senão sairia logo ao entrar, com o aparelho ainda em retrato);
+ *  - FORCED_PORTRAIT (saída): retrato fixo até o aparelho estar fisicamente em retrato, depois
+ *    devolve o controlo ao sistema.
  */
 internal class FullscreenController(
     private val activity: Activity?,
     private val appContext: Context,
 ) {
-    private enum class Want { NONE, LANDSCAPE, PORTRAIT }
+    private enum class Mode { AUTO, FORCED_LANDSCAPE, FORCED_PORTRAIT }
 
-    private var want = Want.NONE
+    private var mode = Mode.AUTO
     private var sensor: OrientationEventListener? = null
+    private var seenLandscape = false
+    private var portraitSince = 0L
 
     fun toggle(landscapeNow: Boolean) {
         val a = activity ?: return
         if (landscapeNow) {
-            want = Want.PORTRAIT
-            a.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            mode = Mode.FORCED_PORTRAIT
+            a.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         } else {
-            want = Want.LANDSCAPE
+            mode = Mode.FORCED_LANDSCAPE
+            seenLandscape = false
+            portraitSince = 0L
             a.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
         startSensor()
     }
+
+    private fun autoRotateOn(): Boolean = try {
+        android.provider.Settings.System.getInt(
+            appContext.contentResolver, android.provider.Settings.System.ACCELEROMETER_ROTATION, 1
+        ) == 1
+    } catch (_: Exception) { true }
 
     private fun startSensor() {
         stopSensor()
@@ -77,26 +99,32 @@ internal class FullscreenController(
                 if (degrees == ORIENTATION_UNKNOWN) return
                 val portrait = degrees <= 25 || degrees >= 335 || degrees in 155..205
                 val land = degrees in 65..115 || degrees in 245..295
-                val matched = when (want) {
-                    Want.LANDSCAPE -> land
-                    Want.PORTRAIT -> portrait
-                    Want.NONE -> false
+                when (mode) {
+                    Mode.FORCED_PORTRAIT -> if (portrait) unlock()
+                    Mode.FORCED_LANDSCAPE -> {
+                        if (land) { seenLandscape = true; portraitSince = 0L }
+                        else if (portrait && seenLandscape && autoRotateOn()) {
+                            val now = System.currentTimeMillis()
+                            if (portraitSince == 0L) portraitSince = now
+                            // Só sai se ficar em retrato de forma estável (ignora tremores ao rodar).
+                            if (now - portraitSince >= 700L) unlock()
+                        } else if (!portrait) portraitSince = 0L
+                    }
+                    Mode.AUTO -> Unit
                 }
-                if (matched) unlock()
             }
         }
         if (l.canDetectOrientation()) {
             sensor = l
             l.enable()
-        } else {
-            // Sem sensor: mantém o bloqueio até o utilizador usar o botão outra vez,
-            // mas ao SAIR liberta já (não há como detectar a posição física).
-            if (want == Want.PORTRAIT) unlock()
+        } else if (mode == Mode.FORCED_PORTRAIT) {
+            // Sem sensor não há como saber a posição física: ao SAIR devolve já ao sistema.
+            unlock()
         }
     }
 
     private fun unlock() {
-        want = Want.NONE
+        mode = Mode.AUTO
         stopSensor()
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
@@ -108,7 +136,7 @@ internal class FullscreenController(
 
     /** Ao sair do ecrã do player: volta SEMPRE ao automático (rotação livre). */
     fun release() {
-        want = Want.NONE
+        mode = Mode.AUTO
         stopSensor()
         activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
