@@ -54,7 +54,10 @@ data class PaymentPlan(
     @SerialName("max_downloads") val maxDownloads: Int? = null,
     val features: List<String> = emptyList(),
     val currency: String? = null,
-    val gateway: String? = null
+    val gateway: String? = null,
+    /** Marca da processadora em MZ e métodos activos, como o hub os manda (AuthRepository/PlansScreen). */
+    val processor: String? = null,
+    val methods: List<String>? = null
 )
 
 /**
