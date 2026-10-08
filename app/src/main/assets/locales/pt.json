@@ -220,6 +220,7 @@
     "title": "Planos",
     "subtitle": "Escolha o plano que melhor se adapta ao seu uso",
     "payWithMpesa": "Pague por M-Pesa",
+    "payWithMpesaEmola": "Pague por M-Pesa ou e-Mola",
     "monthly": "Mensal Premium",
     "perMonth": "/ mês",
     "payUsdt": "Pagar com USDT (Polygon)",

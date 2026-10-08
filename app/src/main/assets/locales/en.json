@@ -231,7 +231,8 @@
       "validity": "Valid for 30 days"
     },
     "policyNote": "Your subscription grants access to platform features (unlimited streaming, higher quality, more screens) and is not the purchase of any specific content. Creators are solely responsible for what they publish; the platform only provides the infrastructure.",
-    "payWithMpesa": "Pay with M-Pesa"
+    "payWithMpesa": "Pay with M-Pesa",
+    "payWithMpesaEmola": "Pay with M-Pesa or e-Mola"
   },
   "payment": {
     "title": "Complete subscription",

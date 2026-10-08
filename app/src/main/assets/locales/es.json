@@ -231,7 +231,8 @@
       "validity": "Válido por 30 días"
     },
     "policyNote": "Su suscripción da acceso a recursos de la plataforma (streaming ilimitado, mayor calidad, más pantallas) y no es la compra de ningún contenido específico. Los creadores son los únicos responsables de lo que publican; la plataforma solo ofrece la infraestructura.",
-    "payWithMpesa": "Pague con M-Pesa"
+    "payWithMpesa": "Pague con M-Pesa",
+    "payWithMpesaEmola": "Paga con M-Pesa o e-Mola"
   },
   "payment": {
     "title": "Completar suscripción",
