@@ -18,3 +18,9 @@ Causa: falha/cancelamento tratados como "lista vazia" nos clientes; a API respon
 - lib/channels-source.ts: playlist paciente
 - ShakaPlayer: performECDH paciente (90 s), hls.js 90/60/60 s + 10 retries, fatais voltam a inicializar
 - fix: PaymentPlan ganha processor/methods (o upload já usava-os em AuthRepository/PlansScreen e não compilava)
+
+## Ronda 3b — correcções críticas
+- Ecrã inteiro: o Media3 notifica o listener do botão quando o ícone é sincronizado por código → alternava outra vez (virava e desvirava). Guarda anti-loop em PlayerScreen e ChannelsPlayerScreen.
+- Spinner: estado "à espera de dados" relido do player em cada evento + relógio de 250 ms (buffering, READY sem tocar, seek, pause/play). Canais: spinner nativo desligado (era duplicado).
+- Catálogo/Início/Minha Coleção: debounce de 150 ms nas cargas (coalesce reinícios do arranque).
+- Google: app/build.gradle.kts passa a assinar o debug com app/pixgo-debug.keystore (SHA-1 estável); "cancelado" já não é silencioso.
