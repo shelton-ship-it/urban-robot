@@ -5,6 +5,19 @@ plugins {
 }
 
 android {
+    // Assinatura de DEBUG ESTÁVEL. Sem isto o runner do GitHub gera um debug.keystore NOVO a cada
+    // build → o SHA-1 muda sempre → o Google recusa o login (o seletor de contas fecha e nada
+    // acontece). Com o keystore versionado o SHA-1 é sempre o mesmo e pode ser registado uma vez
+    // no cliente OAuth Android (io.pixgo.app) da Google Cloud Console.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("pixgo-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     namespace = "io.pixgo.app"
     compileSdk = 34
 
