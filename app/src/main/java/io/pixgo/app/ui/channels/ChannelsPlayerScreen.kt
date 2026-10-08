@@ -90,6 +90,7 @@ fun ChannelsPlayerScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val fs = rememberFullscreenState()
+    val syncingFsIcon = remember { booleanArrayOf(false) }
     val fsS by rememberUpdatedState(fs)
 
     var prepared by remember { mutableStateOf(false) }
@@ -120,10 +121,25 @@ fun ChannelsPlayerScreen(
     var buffering by remember(exoPlayer) { mutableStateOf(false) }
     var errorMessage by remember(exoPlayer) { mutableStateOf<String?>(null) }
 
+    fun waitingNow(): Boolean {
+        val st = exoPlayer.playbackState
+        if (st == Player.STATE_BUFFERING) return true
+        return st == Player.STATE_READY && exoPlayer.playWhenReady && !exoPlayer.isPlaying &&
+            exoPlayer.playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE
+    }
+    LaunchedEffect(exoPlayer) {
+        while (true) {
+            val w = waitingNow()
+            if (buffering != w) buffering = w
+            delay(250L)
+        }
+    }
+
     DisposableEffect(exoPlayer) {
         var recoverJob: Job? = null
         val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) { buffering = state == Player.STATE_BUFFERING }
+            override fun onPlaybackStateChanged(state: Int) { buffering = waitingNow() }
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { buffering = waitingNow() }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) { errorCount = 0; recovering = false; errorMessage = null }
             }
@@ -144,7 +160,7 @@ fun ChannelsPlayerScreen(
                 }
             }
         }
-        buffering = exoPlayer.playbackState == Player.STATE_BUFFERING
+        buffering = waitingNow()
         exoPlayer.addListener(listener)
         onDispose {
             recoverJob?.cancel()
@@ -214,17 +230,22 @@ fun ChannelsPlayerScreen(
                         player = exoPlayer
                         useController = true
                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                        setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER) // spinner único (Compose)
                     }
                 },
                 update = { pv ->
                     if (pv.player !== exoPlayer) pv.player = exoPlayer
                     // Botão NATIVO de ecrã inteiro (aparece quando há listener).
-                    pv.setFullscreenButtonClickListener { fsS.toggle() }
-                    runCatching {
-                        pv.javaClass.getMethod("setFullscreenButtonState", java.lang.Boolean.TYPE)
-                            .invoke(pv, fs.isFullscreen)
-                    }
+                    // Guarda anti-loop: sincronizar o ícone também notifica este listener (Media3) e
+                    // fazia o ecrã virar e desvirar sozinho.
+                    pv.setFullscreenButtonClickListener { if (!syncingFsIcon[0]) fsS.toggle() }
+                    syncingFsIcon[0] = true
+                    try {
+                        runCatching {
+                            pv.javaClass.getMethod("setFullscreenButtonState", java.lang.Boolean.TYPE)
+                                .invoke(pv, fs.isFullscreen)
+                        }
+                    } finally { syncingFsIcon[0] = false }
                 },
                 onRelease = { pv -> pv.player = null },
                 modifier = Modifier.fillMaxSize()

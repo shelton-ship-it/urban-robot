@@ -118,6 +118,10 @@ import kotlin.coroutines.resume
  *    A interceção só vê navegações do frame PRINCIPAL; por isso a Thank You Page
  *    carregada dentro do iframe da caixa Hotmart navega `window.top`
  *    (CheckoutStatusPage.tsx), senão o site abriria dentro da caixa.
+ *  - checkout Hotmart em PÁGINA INTEIRA: a Hotmart só usa overlay/iframe no desktop (widget.min.js);
+ *    em Android o link navega para o checkout. O hub (CheckoutPage v3.2) navega o topo desta
+ *    WebView para pay.hotmart.com; ao sair do host do hub o spinner NATIVO volta a cobrir a
+ *    WebView até a página nova carregar (antes ficava um ecrã escuro sem indicação nenhuma);
  *  - só em debug: console.log da página e navegações vão para o logcat
  *    (tag PixGoCheckout) e a WebView fica visível em chrome://inspect.
  */
@@ -144,11 +148,20 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onCl
     // com o centro da tela. Assim há um único spinner, sempre no mesmo sítio, até haver conteúdo.
     var contentReady by remember { mutableStateOf(false) }
     var popup by remember { mutableStateOf<WebView?>(null) }
+    // navId: nova navegação de topo para fora do hub (ex.: checkout Hotmart) => reinicia o vigia de
+    // inatividade. hubContentSeen: o hub já mostrou conteúdo uma vez; a partir daí as páginas
+    // seguintes (Hotmart, Thank You Page) não esperam pelo `.loading-ring` do hub.
+    var navId by remember { mutableIntStateOf(0) }
+    var hubContentSeen by remember { mutableStateOf(false) }
 
     // Host para onde o hub devolve a pessoa depois de pagar (return_to do próprio URL).
     val returnHost = remember(url) {
         runCatching { Uri.parse(url).getQueryParameter("return_to")?.let { Uri.parse(it).host } }.getOrNull()
     }
+
+    // Host do próprio hub (página de checkout, Thank You Pages): navegações para outros hosts
+    // são o checkout externo (Hotmart).
+    val hubHost = remember(url) { runCatching { Uri.parse(url).host }.getOrNull() }
 
     fun closePopup() {
         popup?.let { p -> p.stopLoading(); (p.parent as? ViewGroup)?.removeView(p); p.destroy() }
@@ -160,13 +173,19 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onCl
         val wv = webViewRef
         when {
             child != null -> if (child.canGoBack()) child.goBack() else closePopup()
-            wv != null && wv.canGoBack() && !failed -> wv.goBack()
+            wv != null && wv.canGoBack() && !failed -> {
+                // Voltar do checkout externo ao hub: nunca deixar o spinner nativo preso por cima.
+                pageReady = true
+                contentReady = true
+                progress = 100
+                wv.goBack()
+            }
             else -> onClose()
         }
     }
 
     // Sem progresso por LOAD_IDLE_TIMEOUT_MS => estado de erro com retry (nunca spinner eterno).
-    LaunchedEffect(attempt) {
+    LaunchedEffect(attempt, navId) {
         var lastProgress = progress
         var idleMs = 0L
         var totalMs = 0L
@@ -183,6 +202,13 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onCl
 
     LaunchedEffect(pageReady, attempt) {
         if (!pageReady) { contentReady = false; return@LaunchedEffect }
+        if (hubContentSeen) {
+            // Páginas seguintes ao hub (checkout Hotmart em página inteira, Thank You Page): sem
+            // `.loading-ring` do hub para esperar; só uma pausa curta para a SPA pintar.
+            delay(500L)
+            contentReady = true
+            return@LaunchedEffect
+        }
         delay(400L) // deixa a página hidratar antes da 1.ª leitura
         var waited = 0L
         var goneInARow = 0
@@ -197,6 +223,7 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onCl
             if (goneInARow < 2) { delay(150L); waited += 150L }
         }
         contentReady = true
+        hubContentSeen = true
     }
 
     DisposableEffect(Unit) {
@@ -287,7 +314,18 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onCl
                                 returnHost = returnHost,
                                 onReturn = onPaid,
                                 onMainFrameError = { failed = true },
-                                onStarted = { failed = false },
+                                onStarted = { startedUrl ->
+                                    failed = false
+                                    val host = runCatching { startedUrl?.let { Uri.parse(it).host } }.getOrNull()
+                                    if (hubContentSeen && host != null && host != hubHost) {
+                                        // Navegação de topo para fora do hub (checkout Hotmart): volta a mostrar
+                                        // o spinner nativo + barra de progresso até a página nova carregar.
+                                        progress = 0
+                                        pageReady = false
+                                        contentReady = false
+                                        navId++
+                                    }
+                                },
                                 onFinished = { if (!failed) pageReady = true },
                                 onRenderGone = { failed = true; webViewRef = null },
                             )
@@ -354,6 +392,7 @@ fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onCl
                                         failed = false
                                         pageReady = false
                                         contentReady = false
+                                        hubContentSeen = false
                                         progress = 0
                                         attempt++
                                     }
@@ -410,13 +449,13 @@ private fun checkoutClient(
     returnHost: String?,
     onReturn: () -> Unit,
     onMainFrameError: () -> Unit,
-    onStarted: () -> Unit = {},
+    onStarted: (String?) -> Unit = {},
     onFinished: () -> Unit = {},
     onRenderGone: () -> Unit = {},
 ): WebViewClient = object : WebViewClient() {
     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
         if (BuildConfig.DEBUG) Log.d(TAG, "start $url")
-        onStarted()
+        onStarted(url)
     }
 
     override fun onPageFinished(view: WebView?, url: String?) {

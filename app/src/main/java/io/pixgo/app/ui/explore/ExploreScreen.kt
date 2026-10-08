@@ -219,7 +219,10 @@ fun ExploreScreen(
         runCatchingNonCancel { gridState.scrollToItem(0) }
     }
 
-    LaunchedEffect(type, sort, activeProfileId, uiLang, reloadKey) { load(1) }
+    LaunchedEffect(type, sort, activeProfileId, uiLang, reloadKey) {
+        delay(150L) // coalesce reinícios do arranque (perfil/idioma) numa única carga
+        load(1)
+    }
 
     LaunchedEffect(type, sort, isKidProfile, activeProfileId, uiLang) {
         if (type != "all" || isKidProfile) { trending = emptyList(); trendingLoading = false; return@LaunchedEffect }

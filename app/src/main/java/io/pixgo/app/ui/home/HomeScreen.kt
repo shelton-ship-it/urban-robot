@@ -96,6 +96,9 @@ fun HomeScreen(
 
     // Carga inicial — reinicia tudo quando o perfil activo / idioma muda.
     LaunchedEffect(activeProfileId, uiLang, reloadKey) {
+        // Coalesce reinícios do arranque (perfil/idioma resolvem em ms): só a ÚLTIMA carga chega à
+        // rede e o skeleton fica contínuo (antes: skeleton → some → skeleton outra vez).
+        kotlinx.coroutines.delay(150L)
         loading = true
         failed = false
         trendingLoading = true

@@ -121,6 +121,10 @@ fun PlayerScreen(
     val onToggleFullscreenS by rememberUpdatedState(onToggleFullscreen)
     val onCloseS by rememberUpdatedState(onClose)
 
+    // O Media3 notifica o listener do botão de ecrã inteiro TAMBÉM quando o estado do ícone é
+    // mudado por código (setFullscreenButtonState). Sem esta guarda, sincronizar o ícone depois
+    // de rodar o ecrã disparava "alternar" outra vez e o ecrã virava e DESVIRAVA sozinho.
+    val syncingFsIcon = remember { booleanArrayOf(false) }
     var loading by remember { mutableStateOf(true) }
     var attempt by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -239,18 +243,42 @@ fun PlayerScreen(
         }
     }
 
+    // SPINNER CONSISTENTE (como o YouTube): em vez de depender de um único evento
+    // (onPlaybackStateChanged), o estado "à espera de dados" é RELIDO do player em cada evento
+    // relevante e por um relógio de 250 ms. Assim carregar num botão, seek, pausa/play, rodar o
+    // ecrã ou um segmento lento nunca deixam o spinner "perdido" nem o vídeo parecer partido.
+    fun waitingNow(): Boolean {
+        val st = exoPlayer.playbackState
+        if (st == Player.STATE_BUFFERING) return true
+        return st == Player.STATE_READY && exoPlayer.playWhenReady && !exoPlayer.isPlaying &&
+            exoPlayer.playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE
+    }
+    LaunchedEffect(exoPlayer) {
+        while (true) {
+            val w = waitingNow()
+            if (buffering != w) buffering = w
+            delay(250L)
+        }
+    }
+
     // Auto-next (ShakaPlayer.tsx:770-783) + estado de buffering + recuperação de erros.
     DisposableEffect(exoPlayer) {
-        buffering = exoPlayer.playbackState == Player.STATE_BUFFERING
+        buffering = waitingNow()
         var recoverJob: Job? = null
         val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
-                buffering = state == Player.STATE_BUFFERING
+                buffering = waitingNow()
                 if (state == Player.STATE_ENDED && onNextEpisodeS != null) autoNextIn = 5
             }
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) { buffering = waitingNow() }
+            override fun onIsLoadingChanged(isLoading: Boolean) { buffering = waitingNow() }
+            override fun onPositionDiscontinuity(
+                oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int,
+            ) { buffering = waitingNow() }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) { errorCount = 0; recovering = false }
+                buffering = waitingNow()
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -345,11 +373,15 @@ fun PlayerScreen(
             update = { pv ->
                 if (pv.player !== exoPlayer) pv.player = exoPlayer
                 if (onToggleFullscreenS != null) {
-                    pv.setFullscreenButtonClickListener { onToggleFullscreenS?.invoke() }
+                    pv.setFullscreenButtonClickListener {
+                        // só toques REAIS do utilizador alternam; sincronizações do ícone são ignoradas
+                        if (!syncingFsIcon[0]) onToggleFullscreenS?.invoke()
+                    }
                 } else {
                     pv.setFullscreenButtonClickListener(null)
                 }
-                syncFullscreenIcon(pv, fullscreen)
+                syncingFsIcon[0] = true
+                try { syncFullscreenIcon(pv, fullscreen) } finally { syncingFsIcon[0] = false }
                 // Enquanto o spinner está visível, os botões pause/«/» do centro saem de
                 // cima dele: davam a impressão de player quebrado. O spinner manda.
                 setCenterControlsHidden(pv, hidden = spinnerVisible)

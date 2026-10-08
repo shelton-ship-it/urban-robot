@@ -73,6 +73,7 @@ fun MyListScreen(
         if (activeProfileId == null) { loading = false; return@LaunchedEffect }
         loading = true
         failed = false
+        kotlinx.coroutines.delay(150L) // coalesce reinícios do arranque
         // Cancelamento (perfil muda) NÃO é falha; falha real (depois de esperar) ≠ lista vazia.
         val res = runCatchingNonCancel { catalogRepository.myList(activeProfileId) }.getOrNull()
         if (res == null) {

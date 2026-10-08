@@ -17,7 +17,8 @@ import io.pixgo.app.BuildConfig
 sealed class GoogleResult {
     /** ID token (JWT) do Google — é o `credential` que POST /api/auth/google espera. */
     data class Token(val idToken: String) : GoogleResult()
-    object Cancelled : GoogleResult()
+    /** Fechou sem token. `cause` ajuda a distinguir cancelamento real de falha de configuração. */
+    class Cancelled(val cause: Throwable? = null) : GoogleResult()
     data class Failure(val cause: Throwable?) : GoogleResult()
 }
 
@@ -52,7 +53,8 @@ object GoogleSignIn {
                 GoogleResult.Failure(IllegalStateException("credencial inesperada: ${cred.type}"))
             }
         } catch (e: GetCredentialCancellationException) {
-            GoogleResult.Cancelled
+            Log.w(TAG, "Seletor fechado/cancelado: ${e.errorMessage}", e)
+            GoogleResult.Cancelled(e)
         } catch (e: GetCredentialException) {
             Log.e(TAG, "GetCredentialException type=${e.type} msg=${e.errorMessage}", e)
             GoogleResult.Failure(e)

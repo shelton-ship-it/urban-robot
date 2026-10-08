@@ -426,7 +426,12 @@ private fun GoogleSection(authRepository: AuthRepository, disabled: Boolean, onE
                         )
                     }
                 }
-                GoogleResult.Cancelled -> Unit
+                // Antes era silencioso: escolhia-se a conta, o seletor fechava e "nada acontecia".
+                // O Google devolve "cancelado" também quando recusa o app (SHA-1/pacote não
+                // registados) — por isso há SEMPRE feedback visível; em debug mostra o motivo.
+                is GoogleResult.Cancelled -> onError(
+                    tr.t("hubAuth.googleLoginFailed") + GoogleSignIn.debugReason(r.cause)
+                )
                 is GoogleResult.Failure -> onError(tr.t("hubAuth.googleLoginFailed") + GoogleSignIn.debugReason(r.cause))
             }
             busy = false

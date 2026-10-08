@@ -135,7 +135,8 @@ fun PlansScreen(
         // de /main/plans), apontando para o domínio público da ferramenta.
         val returnTo = "https://pixgo.qzz.io/main/plans" +
             (highlight?.let { "?highlight=$it" } ?: "")
-        onSubscribe("$HUB_CHECKOUT_URL?plan=$planId&return_to=${Uri.encode(returnTo)}")
+        // px_app=android: sinal explícito para o hub abrir o checkout Hotmart em página inteira (WebView)
+        onSubscribe("$HUB_CHECKOUT_URL?plan=$planId&return_to=${Uri.encode(returnTo)}&px_app=android")
     }
 
     val narrow = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp <= 768
