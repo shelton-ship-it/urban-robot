@@ -17,3 +17,4 @@ Causa: falha/cancelamento tratados como "lista vazia" nos clientes; a API respon
 - content/watch: só 404 real = "não encontrado"
 - lib/channels-source.ts: playlist paciente
 - ShakaPlayer: performECDH paciente (90 s), hls.js 90/60/60 s + 10 retries, fatais voltam a inicializar
+- fix: PaymentPlan ganha processor/methods (o upload já usava-os em AuthRepository/PlansScreen e não compilava)
