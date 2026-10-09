@@ -149,7 +149,7 @@ fun PlayerScreen(
     val scope = rememberCoroutineScope()
 
     val downloadStore = remember { io.pixgo.app.data.download.DownloadStore(context) }
-    val exoPlayer = remember(contentId, episodeId) {
+    val exoPlayer = remember(contentId, episodeId, offline) {
         val dataSourceFactory = BinDecryptDataSource.Factory(
             httpClient = io.pixgo.app.data.network.NetworkModule.playerHttp(context),
             keyProvider = { drmKey },
@@ -157,7 +157,7 @@ fun PlayerScreen(
             // ficheiro cifrado em disco; a decifra chunk-v2 é idêntica.
             localResolver = { uri -> downloadStore.resolveLocal(uri) }
         )
-        PlayerFactory.createVod(context, dataSourceFactory)
+        PlayerFactory.createVod(context, dataSourceFactory, patient = !offline)
     }
 
     LaunchedEffect(contentId, episodeId, offline, attempt) {
@@ -302,7 +302,11 @@ fun PlayerScreen(
                 errorCount += 1
                 if (errorCount > MAX_AUTO_RECOVERIES) {
                     recovering = false
-                    errorMessage = "Falha ao reproduzir o vídeo. Verifique a ligação."
+                    errorMessage = if (offline) {
+                        // Sessão local: "verifique a ligação" não faz sentido — mostra a causa real.
+                        val cause = error.cause?.message?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""
+                        "Não foi possível reproduzir este download (${error.errorCodeName})$cause"
+                    } else "Falha ao reproduzir o vídeo. Verifique a ligação."
                     return
                 }
                 recovering = true

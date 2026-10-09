@@ -12,7 +12,6 @@ import io.pixgo.app.data.network.HeartbeatBody
 import io.pixgo.app.data.network.NetworkModule
 import io.pixgo.app.data.network.StreamResponse
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 
 sealed class StreamHandshakeResult {
@@ -147,21 +146,34 @@ class PlayerRepository(private val context: Context) {
      * segmento porque o pipeline não grava durações reais — o player corrige
      * a duração real ao decodificar os fMP4, exactamente como no web.
      */
-    fun startLocal(contentId: String, episodeId: String?): Boolean {
+    suspend fun startLocal(contentId: String, episodeId: String?): Boolean {
         val key = DownloadStore.keyFor(contentId, episodeId)
-        val meta = runBlocking { store.get(key) } ?: return false
+        val meta = store.get(key) ?: return false
         if (meta.status != DownloadStatus.COMPLETED || meta.keyHex.isNullOrBlank()) return false
 
         val total = meta.segCount
         if (total <= 0) return false
+
+        // Durações REAIS (#EXTINF do index.m3u8, guardadas pelo DownloadEngine). Com
+        // `-c:v copy` no process.yml os segmentos seguem os keyframes (4, 5, 10 s…),
+        // não um valor fixo; o ExoPlayer monta a timeline e o seek a partir destas
+        // durações, por isso 6 s fixos desalinham duração/seek/buffer. Downloads antigos
+        // (sem durations.txt) caem na duração de reserva, como antes.
+        val durations = store.readDurations(key)?.takeIf { it.size == total }
+        val fallback = DownloadEngine.OFFLINE_SEG_DURATION
+        val target = Math.ceil(durations?.maxOrNull() ?: fallback).toInt().coerceAtLeast(1)
+
         val sb = StringBuilder()
         sb.append("#EXTM3U\n")
         sb.append("#EXT-X-VERSION:7\n")
-        sb.append("#EXT-X-TARGETDURATION:${DownloadEngine.OFFLINE_SEG_DURATION.toInt()}\n")
+        sb.append("#EXT-X-TARGETDURATION:$target\n")
         sb.append("#EXT-X-PLAYLIST-TYPE:VOD\n")
+        sb.append("#EXT-X-INDEPENDENT-SEGMENTS\n")
         sb.append("#EXT-X-MAP:URI=\"${OfflineLocal.SCHEME}://$key/init.bin\"\n")
         repeat(total) {
-            sb.append("#EXTINF:%.3f,\n".format(DownloadEngine.OFFLINE_SEG_DURATION))
+            val d = durations?.get(it) ?: fallback
+            // Locale.US: com locale pt o format() escreveria "6,000" (vírgula).
+            sb.append(java.lang.String.format(java.util.Locale.US, "#EXTINF:%.6f,\n", d))
             sb.append("${OfflineLocal.SCHEME}://$key/seg.bin?i=$it\n")
         }
         sb.append("#EXT-X-ENDLIST\n")

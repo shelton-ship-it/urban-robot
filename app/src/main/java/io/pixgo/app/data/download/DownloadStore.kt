@@ -158,6 +158,26 @@ class DownloadStore(private val context: Context) {
         tmp.renameTo(final)
     }
 
+    /** Durações REAIS (#EXTINF do index.m3u8), uma por linha, na ordem dos segmentos. */
+    fun durationsFile(key: String): File = File(dirFor(key), "durations.txt")
+
+    fun writeDurations(key: String, durations: List<Double>) {
+        val dir = dirFor(key)
+        val tmp = File(dir, "durations.txt.part")
+        tmp.writeText(durations.joinToString("\n") { java.lang.String.format(java.util.Locale.US, "%.6f", it) })
+        val final = durationsFile(key)
+        if (final.exists()) final.delete()
+        if (!tmp.renameTo(final)) tmp.delete()
+    }
+
+    fun readDurations(key: String): List<Double>? {
+        val f = durationsFile(key)
+        if (!f.exists()) return null
+        return runCatching {
+            f.readLines().filter { it.isNotBlank() }.map { it.trim().toDouble() }
+        }.getOrNull()
+    }
+
     fun segFileName(index: Int): String = "seg%05d.bin".format(index)
     fun initFileName(): String = "init.bin"
 

@@ -210,7 +210,11 @@ fun WatchScreen(
         mutableStateOf<io.pixgo.app.data.download.DownloadMeta?>(null)
     }
     LaunchedEffect(downloadKey, offline) {
-        if (offline) return@LaunchedEffect
+        if (offline) {
+            // Sessão local: só precisa do meta (título) — uma leitura, sem polling.
+            dlMeta = downloadStore.allOnce().find { it.key == downloadKey }
+            return@LaunchedEffect
+        }
         while (true) {
             dlMeta = downloadStore.allOnce().find { it.key == downloadKey }
             delay(700L)
@@ -218,6 +222,14 @@ fun WatchScreen(
     }
 
     LaunchedEffect(viewId, reloadKey) {
+        // Sessão OFFLINE: nenhum pedido ao catálogo. Antes tentava /content/{id} sem rede
+        // durante ~90 s (skeleton + toast "erro de rede") — era o que fazia o download
+        // "exigir internet". O player já tem tudo o que precisa em disco.
+        if (offline) {
+            loading = false
+            loadFailed = false
+            return@LaunchedEffect
+        }
         loading = true
         loadFailed = false
         // Distingue 3 casos (antes tudo virava "não encontrado"):
@@ -421,6 +433,24 @@ fun WatchScreen(
 
             // Skeleton da página (nada de spinner) enquanto o conteúdo carrega.
             if (!fullscreen && loading) PxWatchDetailsSkeleton()
+
+            // Cabeçalho offline: título guardado no download (o detalhe remoto não é pedido).
+            if (!fullscreen && offline) {
+                dlMeta?.let { m ->
+                    Column(Modifier.padding(horizontal = 16.dp)) {
+                        Text(
+                            m.title,
+                            fontFamily = Montserrat,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp,
+                            color = Px.TextLight,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text("Disponível offline", color = Px.TextMuted, fontSize = 12.sp)
+                    }
+                }
+            }
 
             if (!fullscreen)
             detail?.let { d ->

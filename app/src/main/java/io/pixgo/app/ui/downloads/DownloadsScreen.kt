@@ -80,15 +80,24 @@ fun DownloadsScreen(
 
     var items by remember { mutableStateOf<List<DownloadMeta>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    // Chaves com um download realmente a correr neste momento (estado partilhado do motor).
+    // Um meta "DOWNLOADING" que NÃO está aqui está parado (processo morto / sem rede).
+    var runningKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     // Gate idêntico ao original: !!(plan && plan.id !== 'free' && plan.is_active)
     val canDownload = authState.plan?.let { it.id != "free" && it.isActive == true } ?: false
+
+    // resumeInterruptedDownloads() no mount da página (downloads-resume.ts): retoma os
+    // downloads parados/falhados a partir do primeiro segmento em falta, no escopo do
+    // processo (não morre ao sair deste ecrã).
+    LaunchedEffect(Unit) { engine.resumeInBackground() }
 
     LaunchedEffect(Unit) {
         while (true) {
             // load() + loadActive() do original num só: allOnce() já reconcilia
             // com o disco e remove expirados (mesma regra expiresAt > now).
             items = store.allOnce()
+            runningKeys = items.filter { engine.isDownloading(it.key) }.map { it.key }.toSet()
             loading = false
             delay(1_500L)
         }
@@ -135,6 +144,7 @@ fun DownloadsScreen(
                 active.forEach { d ->
                     ActiveRow(
                         d = d,
+                        running = d.key in runningKeys,
                         onCancel = {
                             // cancelActive(): aborta o motor e apaga meta+bytes
                             engine.cancel(d.key)
@@ -203,8 +213,17 @@ fun DownloadsScreen(
 }
 
 @Composable
-private fun ActiveRow(d: DownloadMeta, onCancel: () -> Unit, onRetry: () -> Unit) {
+private fun ActiveRow(d: DownloadMeta, running: Boolean, onCancel: () -> Unit, onRetry: () -> Unit) {
     val isError = d.status == DownloadStatus.ERROR
+    // DOWNLOADING sem motor activo = parado (não finge que está a baixar).
+    val paused = !isError && !running
+    val preparing = !isError && running && d.segCount == 0
+    val label = when {
+        isError -> "Falhou"
+        paused -> "Pausado · ${d.progress}%"
+        preparing -> "Preparando…"
+        else -> "Baixando ${d.progress}%"
+    }
     Row(
         Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
@@ -225,7 +244,7 @@ private fun ActiveRow(d: DownloadMeta, onCancel: () -> Unit, onRetry: () -> Unit
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(d.title, color = Px.TextTitle, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                 Text(
-                    if (isError) "Falhou" else "${d.progress}%",
+                    label,
                     color = if (isError) Color(0xFFFF7070) else Px.TextMuted,
                     fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                 )
@@ -238,8 +257,12 @@ private fun ActiveRow(d: DownloadMeta, onCancel: () -> Unit, onRetry: () -> Unit
                         .background(if (isError) Color(0xFFFF7070) else Px.Primary)
                 )
             }
+            if (isError && !d.error.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(d.error, color = Color(0xFFFF7070), fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
         }
-        if (isError) TextButtonSmall("Repetir") { onRetry() }
+        if (isError || paused) TextButtonSmall(if (isError) "Repetir" else "Retomar") { onRetry() }
         Box(
             Modifier.size(28.dp).clip(RoundedCornerShape(6.dp))
                 .background(Color(0x4D000000)).border(1.dp, Px.Border, RoundedCornerShape(6.dp))

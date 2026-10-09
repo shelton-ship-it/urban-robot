@@ -94,10 +94,15 @@ object PlayerFactory {
         return b
     }
 
-    /** VOD cifrado (.bin) — HlsMediaSource + BinDecryptDataSource. */
-    fun createVod(context: Context, dataSourceFactory: DataSource.Factory): ExoPlayer {
+    /**
+     * VOD cifrado (.bin) — HlsMediaSource + BinDecryptDataSource.
+     * `patient = false` (sessão OFFLINE): a política paciente (20 tentativas, ~100 s por
+     * segmento) existe para redes lentas; num ficheiro local um erro não é transitório e
+     * só escondia a falha atrás de um spinner infinito.
+     */
+    fun createVod(context: Context, dataSourceFactory: DataSource.Factory, patient: Boolean = true): ExoPlayer {
         val hls = HlsMediaSource.Factory(dataSourceFactory)
-            .setLoadErrorHandlingPolicy(PatientRetryPolicy())
+        if (patient) hls.setLoadErrorHandlingPolicy(PatientRetryPolicy())
         return builder(context, hls).build()
     }
 
