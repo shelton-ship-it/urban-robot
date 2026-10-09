@@ -1,5 +1,7 @@
 package io.pixgo.app.ui.auth
 
+import io.pixgo.app.ui.common.KeepScreenOn
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -134,6 +136,7 @@ private val ErrorBorder = Color(0x33E50914)      // rgba(229,9,20,.2)
 @Composable
 fun AuthScreen(authRepository: AuthRepository) {
     var mode by rememberSaveable { mutableStateOf("login") } // "login" | "register"
+    KeepScreenOn()
     BackHandler(enabled = mode == "register") { mode = "login" }
     AuthPage {
         if (mode == "login") LoginForm(authRepository) { mode = "register" }

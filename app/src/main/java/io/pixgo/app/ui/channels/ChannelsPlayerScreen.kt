@@ -1,5 +1,7 @@
 package io.pixgo.app.ui.channels
 
+import io.pixgo.app.ui.common.KeepScreenOn
+
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
@@ -87,6 +89,7 @@ fun ChannelsPlayerScreen(
     onClose: () -> Unit,
     onUpgrade: (planId: String) -> Unit = {},
 ) {
+    KeepScreenOn()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val fs = rememberFullscreenState()
@@ -94,6 +97,8 @@ fun ChannelsPlayerScreen(
     val fsS by rememberUpdatedState(fs)
 
     var prepared by remember { mutableStateOf(false) }
+    // Controlos nativos visíveis? O Voltar do ecrã inteiro acompanha-os (some sozinho, volta ao toque).
+    var controlsVisible by remember { mutableStateOf(true) }
     var sessionReplacedMessage by remember { mutableStateOf<String?>(null) }
     // channels/page.tsx: onFreeTimeExhausted(plans, message) → RateLimitModal; onSessionReplaced(message) → SessionReplacedModal
     var freeTime by remember { mutableStateOf<Pair<String?, List<io.pixgo.app.data.model.UpsellPlan>>?>(null) }
@@ -231,6 +236,9 @@ fun ChannelsPlayerScreen(
                         useController = true
                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                         setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER) // spinner único (Compose)
+                        setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+                            controlsVisible = visibility == android.view.View.VISIBLE
+                        })
                     }
                 },
                 update = { pv ->
@@ -286,13 +294,27 @@ fun ChannelsPlayerScreen(
                 }
             }
 
-            if (fs.isFullscreen) {
-                IconButton(onClick = { fsS.toggle() }, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
+            // Só em ecrã inteiro e com os controlos nativos (com erro fica sempre, para haver saída).
+            val showFsChrome = fs.isFullscreen && (controlsVisible || errorMessage != null)
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showFsChrome,
+                modifier = Modifier.align(Alignment.TopStart),
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+            ) {
+                IconButton(onClick = { fsS.toggle() }, modifier = Modifier.padding(8.dp)) {
                     Icon(Icons.Filled.ArrowBack, contentDescription = "Voltar", tint = Color.White)
                 }
+            }
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showFsChrome,
+                modifier = Modifier.align(Alignment.TopEnd),
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+            ) {
                 Text(
                     channelName, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
+                    modifier = Modifier.padding(16.dp)
                 )
             }
         }

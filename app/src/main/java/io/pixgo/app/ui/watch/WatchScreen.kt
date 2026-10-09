@@ -1,5 +1,7 @@
 package io.pixgo.app.ui.watch
 
+import io.pixgo.app.ui.common.KeepScreenOn
+
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -138,6 +140,7 @@ fun WatchScreen(
     // default false = fluxo remoto idêntico ao anterior.
     offline: Boolean = false
 ) {
+    KeepScreenOn()
     val t = LocalTranslator.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()

@@ -1,5 +1,7 @@
 package io.pixgo.app.ui.webview
 
+import io.pixgo.app.ui.common.KeepScreenOn
+
 import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -137,6 +139,7 @@ private const val CONTENT_READY_CAP_MS = 8_000L
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun FastWebViewSheet(url: String, onClose: () -> Unit, onPaid: () -> Unit = onClose) {
+    KeepScreenOn()
     val tr = LocalTranslator.current
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var attempt by remember { mutableIntStateOf(0) }        // muda => WebView nova (retry / render morto)

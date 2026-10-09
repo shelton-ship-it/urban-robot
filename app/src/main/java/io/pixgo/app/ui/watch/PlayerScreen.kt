@@ -1,5 +1,7 @@
 package io.pixgo.app.ui.watch
 
+import io.pixgo.app.ui.common.KeepScreenOn
+
 import android.net.Uri
 import android.view.LayoutInflater
 import android.view.View
@@ -109,6 +111,7 @@ fun PlayerScreen(
     offline: Boolean = false,
     onToggleFullscreen: (() -> Unit)? = null
 ) {
+    KeepScreenOn()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val t = io.pixgo.app.data.i18n.LocalTranslator.current
@@ -126,6 +129,9 @@ fun PlayerScreen(
     // de rodar o ecrã disparava "alternar" outra vez e o ecrã virava e DESVIRAVA sozinho.
     val syncingFsIcon = remember { booleanArrayOf(false) }
     var loading by remember { mutableStateOf(true) }
+    // Visibilidade dos controlos NATIVOS do player (toque mostra/esconde, auto-esconde a tocar).
+    // O botão Voltar do ecrã inteiro acompanha-os.
+    var controlsVisible by remember { mutableStateOf(true) }
     var attempt by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var sessionReplacedMessage by remember { mutableStateOf<String?>(null) }
@@ -381,7 +387,8 @@ fun PlayerScreen(
                     setShowNextButton(false)
                     setShowPreviousButton(false)
                     pvRef[0] = this
-                    setControllerVisibilityListener(PlayerView.ControllerVisibilityListener {
+                    setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+                        controlsVisible = visibility == View.VISIBLE
                         setCenterControlsHidden(this, spinnerNow[0])
                     })
                 }
@@ -443,10 +450,18 @@ fun PlayerScreen(
         // Player LIMPO: sem "X" nem botão tipo "next" por cima do vídeo. Só o
         // Voltar — e apenas em ecrã inteiro, onde a barra da Watch não aparece.
         // Sair do ecrã inteiro = voltar a retrato (o BackHandler vive na Watch).
-        if (fullscreen) {
+        // Só em ecrã inteiro e junto dos controlos nativos: some sozinho com eles e volta com o
+        // toque. Com erro visível fica sempre, para haver saída. Escondido não existe na árvore,
+        // logo não rouba toques ao player.
+        androidx.compose.animation.AnimatedVisibility(
+            visible = fullscreen && (controlsVisible || errorMessage != null),
+            modifier = Modifier.align(Alignment.TopStart),
+            enter = androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.fadeOut(),
+        ) {
             IconButton(
                 onClick = { onToggleFullscreenS?.invoke() ?: onCloseS() },
-                modifier = Modifier.align(Alignment.TopStart).padding(8.dp)
+                modifier = Modifier.padding(8.dp)
             ) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = "Voltar", tint = Color.White)
             }

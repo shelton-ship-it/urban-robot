@@ -1,5 +1,7 @@
 package io.pixgo.app.ui.plans
 
+import io.pixgo.app.ui.common.KeepScreenOn
+
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -105,6 +107,7 @@ fun PlansScreen(
     highlight: String?,
     onSubscribe: (url: String) -> Unit,
 ) {
+    KeepScreenOn()
     val t = LocalTranslator.current
     var plans by remember { mutableStateOf<List<PaymentPlan>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }

@@ -1,5 +1,7 @@
 package io.pixgo.app.ui.auth
 
+import io.pixgo.app.ui.common.KeepScreenOn
+
 import android.annotation.SuppressLint
 import android.graphics.Color as AndroidColor
 import android.webkit.WebView
@@ -60,6 +62,7 @@ private const val HUB_ORIGIN = "https://app.pixgo.qzz.io"
 @Composable
 fun HubLoginSheet(mode: String, authRepository: AuthRepository, onClose: () -> Unit) {
     require(mode == "login" || mode == "register")
+    KeepScreenOn()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(true) }
