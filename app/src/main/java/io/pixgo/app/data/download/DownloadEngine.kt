@@ -102,7 +102,7 @@ class DownloadEngine(private val context: Context) {
     suspend fun start(contentId: String, episodeId: String?, fallbackTitle: String, fallbackPoster: String): DownloadStart =
         withContext(Dispatchers.IO) {
             val key = DownloadStore.keyFor(contentId, episodeId)
-            val existing = store.get(key)
+            val existing = runCatching { store.get(key) }.getOrNull()
             if (existing?.status == DownloadStatus.COMPLETED) {
                 return@withContext DownloadStart.AlreadyDone(existing)
             }
@@ -124,7 +124,7 @@ class DownloadEngine(private val context: Context) {
                     )
                 }
 
-                val resp = api.downloadRaw(contentId, buildParams(episodeId))
+                val resp = fetchDownloadRaw(contentId, episodeId)
                 if (resp.code() == 403) {
                     val err = parseGateError(resp.errorBody()?.string())
                     discardIfNew(key, existing)
@@ -134,10 +134,14 @@ class DownloadEngine(private val context: Context) {
                         err?.currentPlan
                     )
                 }
+                if (resp.code() == 401) {
+                    discardIfNew(key, existing)
+                    return@withContext DownloadStart.Failed("Sessão expirada. Saia e entre novamente na conta.")
+                }
                 if (!resp.isSuccessful) {
                     val err = parseGateError(resp.errorBody()?.string())
                     discardIfNew(key, existing)
-                    return@withContext DownloadStart.Failed(err?.message ?: "Falha ao obter licença")
+                    return@withContext DownloadStart.Failed(err?.message ?: "Falha ao obter licença (${resp.code()})")
                 }
                 val raw = resp.body()?.string()
                 if (raw.isNullOrBlank()) {
@@ -180,6 +184,24 @@ class DownloadEngine(private val context: Context) {
             }
         }
 
+    /**
+     * GET /download com refresh automático do token em 401 — equivalente a authedFetch()
+     * do web (store/auth.ts). Antes o motor chamava api.downloadRaw() directo: com o access
+     * token expirado (sessão aberta há tempo) o servidor devolvia 401 e o utilizador via
+     * apenas "Falha ao obter licença", sem nunca chegar a baixar. As outras chamadas
+     * autenticadas da app (lista, views, perfis) já faziam este retry; esta não.
+     */
+    private suspend fun fetchDownloadRaw(contentId: String, episodeId: String?): retrofit2.Response<okhttp3.ResponseBody> {
+        val params = buildParams(episodeId)
+        val first = api.downloadRaw(contentId, params)
+        if (first.code() != 401) return first
+        val app = context.applicationContext as? io.pixgo.app.PixGoApp ?: return first
+        val fresh = runCatching { app.authRepository.refreshAccessToken() }.getOrNull() ?: return first
+        if (fresh.isBlank()) return first
+        first.errorBody()?.close()
+        return api.downloadRaw(contentId, params)
+    }
+
     /** Remove a entrada criada por start() quando nada chegou a ser descarregado. */
     private suspend fun discardIfNew(key: String, existing: DownloadMeta?) {
         if (existing == null) store.remove(key)
@@ -203,7 +225,7 @@ class DownloadEngine(private val context: Context) {
                 // Só downloads antigos, sem manifesto guardado, pedem licença (1 vez).
                 var data = loadManifest(d.key)
                 if (data == null) {
-                    val resp = api.downloadRaw(d.contentId, buildParams(d.episodeId))
+                    val resp = fetchDownloadRaw(d.contentId, d.episodeId)
                     if (!resp.isSuccessful) continue
                     val raw = resp.body()?.string() ?: continue
                     data = parseDownloadResponse(raw)

@@ -296,8 +296,11 @@ fun WatchScreen(
     }
 
     val isEpisodic = detail?.type in listOf("series", "anime", "dorama")
-    // Gate real de download: plano != free E ativo (canDownload no original).
-    val canDownload = authState.plan?.let { it.id != "free" && it.isActive == true } ?: false
+    // Gate de download: plano != free E não marcado como inativo. `isActive` pode vir null
+    // (login pelo hub devolve o plano sem `is_active`; só o /me do pixel_service o preenche) —
+    // com `== true` o botão ficava em "Premium" e abria os planos para quem já pagou.
+    // Mesmo critério de AuthRepository.isPaidActive; o gate REAL é o 403 do servidor.
+    val canDownload = authState.plan?.let { it.id != "free" && it.isActive != false } ?: false
 
     // Parte "views" do handleTime do original: soma só o tempo REALMENTE reproduzido
     // (seek/pausa não somam) e regista 1 view ao atingir o mínimo. Offline não conta.
@@ -550,19 +553,36 @@ fun WatchScreen(
                                     toast = "Já está disponível offline."
                                     return@ActionChip
                                 }
+                                // `if (downloading) return` do web: segundo toque com o motor a trabalhar.
+                                if (downloadEngine.isDownloading(downloadKey)) {
+                                    toast = "Download em curso — acompanha o progresso em Downloads."
+                                    return@ActionChip
+                                }
+                                toast = "Download iniciado — acompanha o progresso em Downloads."
                                 scope.launch {
-                                    when (val r = downloadEngine.start(
-                                        viewId, activeEp?.id ?: reqEpisode,
-                                        d.displayTitle, d.displayPoster ?: ""
-                                    )) {
+                                    // Nada aqui dentro pode escapar: uma exceção não tratada numa
+                                    // coroutine do ecrã derruba a app ("quebra" ao tocar em Baixar).
+                                    val r = try {
+                                        downloadEngine.start(
+                                            viewId, activeEp?.id ?: reqEpisode,
+                                            d.displayTitle, d.displayPoster ?: ""
+                                        )
+                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                        throw e
+                                    } catch (e: Throwable) {
+                                        io.pixgo.app.data.download.DownloadStart.Failed(
+                                            e.message ?: "Erro ao iniciar o download"
+                                        )
+                                    }
+                                    when (r) {
                                         is io.pixgo.app.data.download.DownloadStart.Started ->
-                                            toast = "Download concluído."
+                                            toast = "Download completo! Disponível em Downloads."
                                         is io.pixgo.app.data.download.DownloadStart.AlreadyDone ->
                                             toast = "Já está disponível offline."
-                                        is io.pixgo.app.data.download.DownloadStart.GateBlocked -> {
-                                            // 403 real do backend: mensagem do servidor.
-                                            if (r.exhausted) onUpgrade() else toast = r.message
-                                        }
+                                        // Web: 403 do gate → toast com a mensagem do servidor
+                                        // (nunca abre a página de planos por si só).
+                                        is io.pixgo.app.data.download.DownloadStart.GateBlocked ->
+                                            toast = r.message
                                         is io.pixgo.app.data.download.DownloadStart.Failed ->
                                             toast = r.message
                                     }

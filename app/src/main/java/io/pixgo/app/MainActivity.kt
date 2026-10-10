@@ -359,7 +359,10 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
                 uiLang = langCode,
                 onClose = { watchContentId = null },
                 onOpenRecommendation = { cid -> watchContentId = cid },
-                onUpgrade = { openPlans() }
+                // Web: router.push('/main/plans') sai da watch page. Sem fechar o overlay, os
+                // planos abriam POR BAIXO do player e só se via o modal de aviso de assinaturas.
+                onUpgrade = { watchContentId = null; openPlans() },
+                onUpgradeWithHighlight = { planId -> watchContentId = null; openPlans(planId) }
             )
         }
 
@@ -374,7 +377,8 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
                 uiLang = langCode,
                 onClose = { watchOffline = null },
                 onOpenRecommendation = { nid -> watchContentId = nid; watchOffline = null },
-                onUpgrade = { openPlans() },
+                onUpgrade = { watchOffline = null; openPlans() },
+                onUpgradeWithHighlight = { planId -> watchOffline = null; openPlans(planId) },
                 offline = true
             )
         }

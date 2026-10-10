@@ -85,7 +85,7 @@ fun DownloadsScreen(
     var runningKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     // Gate idêntico ao original: !!(plan && plan.id !== 'free' && plan.is_active)
-    val canDownload = authState.plan?.let { it.id != "free" && it.isActive == true } ?: false
+    val canDownload = authState.plan?.let { it.id != "free" && it.isActive != false } ?: false
 
     // resumeInterruptedDownloads() no mount da página (downloads-resume.ts): retoma os
     // downloads parados/falhados a partir do primeiro segmento em falta, no escopo do
