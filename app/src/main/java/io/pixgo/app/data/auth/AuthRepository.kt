@@ -14,6 +14,7 @@ import io.pixgo.app.data.network.RefreshBody
 import io.pixgo.app.data.network.RegisterBody
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +50,12 @@ class ApiException(val status: Int, message: String, val error: String? = null) 
 class AuthRepository(private val context: Context) {
 
     private val tokenManager = TokenManager(context)
+
+    // Última vez que o /me foi consultado (rede OU cache). Só serve para limitar o
+    // refresh ao voltar ao app (refreshOnResume) — não altera as regras de TTL do cache.
+    @Volatile private var lastMeFetchAt = 0L
+    // Garante UM só polling de plano em simultâneo (ver pollPlanUntilActive).
+    private val planPollActive = java.util.concurrent.atomic.AtomicBoolean(false)
     private val apiCore by lazy { NetworkModule.apiCoreAuth(context, tokenManager) }
     private val pixelService by lazy { NetworkModule.pixelServiceAuth(context, tokenManager) }
     private val uploadApi by lazy { NetworkModule.upload(tokenManager) }
@@ -67,13 +74,16 @@ class AuthRepository(private val context: Context) {
             val token = tokenManager.getToken()
             val cacheRaw = tokenManager.getMeCacheRaw()
             val cache = cacheRaw?.let { runCatching { json.decodeFromString<MeCache>(it) }.getOrNull() }
-            val tokenExp = token?.let { tokenManager.decodeJwtExpMs(it) }
-            val tokenLooksValid = tokenExp != null && tokenExp > System.currentTimeMillis()
 
-            if (cache != null && token != null && tokenLooksValid) {
+            // Offline-first: com token + cache locais mantém a sessão MESMO que o access
+            // token já tenha expirado (o refresh só é possível com rede). Antes exigia
+            // token ainda válido: token expirado + sem rede ⇒ estado vazio (user/plano
+            // null) ⇒ Downloads bloqueados offline. Se a sessão estiver mesmo inválida,
+            // o fetchMe() com rede limpa-a (401/403) e volta ao login.
+            if (cache != null && token != null) {
                 val activeId = resolveActiveProfileId(cache.profiles)
                 _state.value = AuthState(
-                    user = cache.user, plan = cache.plan, profiles = cache.profiles,
+                    user = cache.user, plan = effectivePlan(cache.plan), profiles = cache.profiles,
                     activeProfileId = activeId, token = token, hydrated = true
                 )
             } else {
@@ -81,6 +91,34 @@ class AuthRepository(private val context: Context) {
             }
             fetchMe()
         }
+    }
+
+    /**
+     * Plano a mostrar quando o valor vem do CACHE local (sem rede para o servidor
+     * confirmar): se o plano pago já passou do `expires_at` pelo relógio do aparelho,
+     * trata-o como inativo — o servidor faria o mesmo (syncPlanExpiry). Valores vindos
+     * do /me online são autoritativos e não passam por aqui.
+     */
+    private fun effectivePlan(plan: Plan?): Plan? {
+        if (plan == null || plan.id == "free") return plan
+        val exp = plan.expiresAt?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+        return if (exp != null && exp <= System.currentTimeMillis()) plan.copy(isActive = false) else plan
+    }
+
+    /**
+     * Falha de rede / resposta não-401 no /me: mantém a sessão. Se por algum motivo o
+     * estado ficou sem utilizador mas há cache local, repõe-no a partir do cache (rede de
+     * segurança do modo offline — Downloads têm de continuar acessíveis).
+     */
+    private suspend fun keepSession(cache: MeCache?) {
+        val cur = _state.value
+        val token = tokenManager.getToken()
+        _state.value = if (cur.user == null && cache != null && token != null) {
+            cur.copy(
+                user = cache.user, plan = effectivePlan(cache.plan), profiles = cache.profiles,
+                activeProfileId = resolveActiveProfileId(cache.profiles), token = token, hydrated = true
+            )
+        } else cur.copy(hydrated = true, token = token)
     }
 
     private suspend fun resolveActiveProfileId(profiles: List<Profile>): String? {
@@ -288,6 +326,7 @@ class AuthRepository(private val context: Context) {
     }
 
     suspend fun fetchMe(force: Boolean = false) {
+        lastMeFetchAt = System.currentTimeMillis()
         val cacheRaw = tokenManager.getMeCacheRaw()
         val cache = cacheRaw?.let { runCatching { json.decodeFromString<MeCache>(it) }.getOrNull() }
         val token = tokenManager.getToken()
@@ -305,10 +344,11 @@ class AuthRepository(private val context: Context) {
         try {
             val resp = authedMe()
             if (resp == null) {
-                _state.value = _state.value.copy(hydrated = true, token = tokenManager.getToken())
+                keepSession(cache)
                 return
             }
             if (!resp.isSuccessful) {
+                android.util.Log.w(TAG, "/me falhou: HTTP ${resp.code()}")
                 // Só 401/403 = credencial realmente inválida. O backend devolve 503
                 // para falha de infraestrutura (routes/auth.js GET /me: "o cliente
                 // mantém a sessão e tenta de novo") — apagar o token aqui expulsava
@@ -317,7 +357,7 @@ class AuthRepository(private val context: Context) {
                     tokenManager.clearAll()
                     _state.value = AuthState(hydrated = true)
                 } else {
-                    _state.value = _state.value.copy(hydrated = true, token = tokenManager.getToken())
+                    keepSession(cache)
                 }
                 return
             }
@@ -332,10 +372,11 @@ class AuthRepository(private val context: Context) {
                 hydrated = true
             )
         } catch (e: Exception) {
+            android.util.Log.w(TAG, "/me sem sucesso (rede ou resposta ilegível): ${e.javaClass.simpleName}: ${e.message}")
             // Falha de rede (não uma resposta negativa real do servidor) —
             // mantém o token local intacto, tal como o catch em fetchMe()
             // do store original (o offline continua a funcionar).
-            _state.value = _state.value.copy(hydrated = true, token = tokenManager.getToken())
+            keepSession(cache)
         }
     }
 
@@ -384,6 +425,55 @@ class AuthRepository(private val context: Context) {
     suspend fun invalidateMeCacheAfterPayment() {
         tokenManager.clearMeCache()
         fetchMe(force = true)
+    }
+
+    private fun isPaidActive(plan: Plan?): Boolean =
+        plan != null && plan.id != "free" && plan.isActive != false
+
+    /**
+     * Depois de um pagamento concluído no checkout: o plano é ativado por webhook
+     * (assíncrono). O hub só espera ~15 s no estado "approved" e nem espera em
+     * pendente/análise (boleto, Pix), por isso o /me pode ainda dizer "free". Repete
+     * o /me (sempre à rede) a cada [intervalMs] até o plano aparecer ativo, a sessão
+     * cair ou passar [timeoutMs]. Devolve true se o plano ficou ativo.
+     */
+    suspend fun pollPlanUntilActive(timeoutMs: Long = 60_000L, intervalMs: Long = 3_000L): Boolean {
+        if (!planPollActive.compareAndSet(false, true)) return isPaidActive(_state.value.plan)
+        try {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (true) {
+                fetchMe(force = true)
+                if (_state.value.user == null) return false          // sessão terminou (401/403)
+                if (isPaidActive(_state.value.plan)) return true
+                if (System.currentTimeMillis() + intervalMs > deadline) return false
+                delay(intervalMs)
+            }
+        } finally {
+            planPollActive.set(false)
+        }
+    }
+
+    /**
+     * Ao voltar ao app (ex.: Pix pago na app do banco, boleto compensado, webhook que
+     * atrasou): revalida o plano à rede. Intervalo mínimo entre pedidos: 5 s (free) / 60 s (pago)
+     * e nunca durante um polling de plano em curso. Sem sessão não faz nada.
+     */
+    suspend fun refreshOnResume() {
+        val cur = _state.value
+        if (cur.user == null) { android.util.Log.d(TAG, "resume: sem sessão — ignorado"); return }
+        if (planPollActive.get()) { android.util.Log.d(TAG, "resume: polling de plano em curso — ignorado"); return }
+        // Utilizador free = pode ter acabado de pagar noutro sítio → intervalo curto.
+        // Plano pago = nada a esperar → intervalo longo.
+        val isFree = cur.plan == null || cur.plan.id == "free" || cur.plan.isActive == false
+        val minGap = if (isFree) RESUME_REFRESH_FREE_MS else RESUME_REFRESH_PAID_MS
+        val since = System.currentTimeMillis() - lastMeFetchAt
+        if (since < minGap) {
+            android.util.Log.d(TAG, "resume: ignorado (último /me há ${since} ms < ${minGap} ms)")
+            return
+        }
+        android.util.Log.d(TAG, "resume: a revalidar /me (plano atual=${cur.plan?.id})")
+        fetchMe(force = true)
+        android.util.Log.d(TAG, "resume: plano agora=${_state.value.plan?.id} ativo=${_state.value.plan?.isActive}")
     }
 
     fun isAdmin(): Boolean = _state.value.user?.role == "admin"
@@ -444,3 +534,7 @@ class AuthRepository(private val context: Context) {
 
     private fun parseErrorMessage(resp: retrofit2.Response<*>): String? = parseErrorBody(resp)?.message
 }
+
+private const val TAG = "PixGoAuth"
+private const val RESUME_REFRESH_FREE_MS = 5_000L
+private const val RESUME_REFRESH_PAID_MS = 60_000L

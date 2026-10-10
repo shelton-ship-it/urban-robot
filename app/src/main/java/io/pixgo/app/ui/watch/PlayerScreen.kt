@@ -57,6 +57,7 @@ import io.pixgo.app.data.model.UpsellPlan
 import io.pixgo.app.data.player.BinDecryptDataSource
 import io.pixgo.app.data.player.BinFormat
 import io.pixgo.app.data.player.HeartbeatEvent
+import io.pixgo.app.data.player.runHeartbeatClock
 import io.pixgo.app.data.player.PlayerFactory
 import io.pixgo.app.data.player.PlayerRepository
 import io.pixgo.app.data.player.StreamHandshakeResult
@@ -208,30 +209,34 @@ fun PlayerScreen(
         }
     }
 
-    // Heartbeat — só corre enquanto isPlaying, tal como o listener
-    // play/pause do original que liga/desliga o setInterval. Em sessões
-    // offline não há heartbeat remoto.
+    // Heartbeat — réplica do play/pause/ended do ShakaPlayer.tsx: crédito imediato ao dar
+    // play, depois a cada 120 s enquanto NÃO estiver pausado (buffering conta como a reproduzir).
+    // Em sessões offline não há heartbeat remoto.
     LaunchedEffect(exoPlayer, offline) {
         if (offline) return@LaunchedEffect
-        while (true) {
-            delay(PlayerRepository.HEARTBEAT_INTERVAL_MS)
-            if (!exoPlayer.isPlaying) continue
-            val positionSeconds = (exoPlayer.currentPosition / 1000).toInt()
-            when (val event = repository.sendHeartbeat(contentId, positionSeconds)) {
-                is HeartbeatEvent.SessionReplaced -> {
-                    exoPlayer.pause()
-                    val cb = onSessionReplacedS
-                    if (cb != null) cb(event.message) else sessionReplacedMessage = event.message
+        runHeartbeatClock(
+            player = exoPlayer,
+            immediate = true,
+            sendNow = {
+                val positionSeconds = (exoPlayer.currentPosition / 1000).toInt()
+                repository.sendHeartbeat(contentId, positionSeconds)
+            },
+            onTerminal = { event ->
+                exoPlayer.pause()
+                when (event) {
+                    is HeartbeatEvent.SessionReplaced -> {
+                        val cb = onSessionReplacedS
+                        if (cb != null) cb(event.message) else sessionReplacedMessage = event.message
+                    }
+                    is HeartbeatEvent.FreeTimeExhausted -> {
+                        val cb = onRateLimitedS
+                        if (cb != null) cb(event.message, event.plans)
+                        else freeTimeMessage = event.message ?: "Tempo grátis esgotado."
+                    }
+                    HeartbeatEvent.Ok -> {}
                 }
-                is HeartbeatEvent.FreeTimeExhausted -> {
-                    exoPlayer.pause()
-                    val cb = onRateLimitedS
-                    if (cb != null) cb(event.message, event.plans)
-                    else freeTimeMessage = event.message ?: "Tempo grátis esgotado."
-                }
-                HeartbeatEvent.Ok -> {}
-            }
-        }
+            },
+        )
     }
 
     // onTimeUpdate: posição/duração reais a cada ~5s enquanto reproduz

@@ -2,6 +2,7 @@ package io.pixgo.app.data.download
 
 import android.content.Context
 import io.pixgo.app.data.auth.TokenManager
+import io.pixgo.app.data.i18n.LanguageManager
 import io.pixgo.app.data.network.NetworkModule
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -9,8 +10,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Request
 import org.json.JSONObject
@@ -68,6 +72,8 @@ class DownloadEngine(private val context: Context) {
     // fetch() bruto do original para os .bin do CDN — sem Authorization/cookies.
     private val cdnClient by lazy { NetworkModule.plainHttpClient() }
 
+    private val manifestJson = Json { ignoreUnknownKeys = true }
+
     companion object {
         /** Duração de reserva por segmento (só usada se durations.txt não existir). */
         const val OFFLINE_SEG_DURATION = 6.0
@@ -118,7 +124,7 @@ class DownloadEngine(private val context: Context) {
                     )
                 }
 
-                val resp = api.download(contentId, buildParams(episodeId))
+                val resp = api.downloadRaw(contentId, buildParams(episodeId))
                 if (resp.code() == 403) {
                     val err = parseGateError(resp.errorBody()?.string())
                     discardIfNew(key, existing)
@@ -133,11 +139,19 @@ class DownloadEngine(private val context: Context) {
                     discardIfNew(key, existing)
                     return@withContext DownloadStart.Failed(err?.message ?: "Falha ao obter licença")
                 }
-                val data = resp.body()
-                if (data == null) {
+                val raw = resp.body()?.string()
+                if (raw.isNullOrBlank()) {
                     discardIfNew(key, existing)
                     return@withContext DownloadStart.Failed("Resposta vazia do servidor")
                 }
+                // Tolerante a tipos; se falhar, o catch geral devolve Failed(mensagem) e
+                // descarta a entrada "Preparando" criada acima.
+                val data = parseDownloadResponse(raw)
+
+                // Cada GET /download CONTA para a quota mensal e passa pelo gate do plano
+                // (content.js: canDownload + incrementMonthlyDownloadCount). Guarda o
+                // manifesto para retomar SEM voltar a pedir licença.
+                saveManifest(key, data)
 
                 // O trabalho pesado vive no escopo do PROCESSO: se o chamador
                 // sair do ecrã, só o await é cancelado — o download continua.
@@ -173,9 +187,9 @@ class DownloadEngine(private val context: Context) {
 
     /**
      * Retomador automático — equivalente de resumeInterruptedDownloads():
-     * procura metas 'downloading'/'error', pede um MANIFESTO FRESCO pelo
-     * endpoint real (as URLs assinadas podem ter expirado) e continua a
-     * partir do primeiro segmento em falta, sem apagar os válidos.
+     * procura metas 'downloading'/'error' e continua a partir do primeiro segmento
+     * em falta, sem apagar os válidos. Usa o manifesto guardado em start(): cada
+     * GET /download gasta quota mensal e passa pelo gate do plano.
      */
     suspend fun resumeAll() = withContext(Dispatchers.IO) {
         val pending = store.allOnce().filter { it.status != DownloadStatus.COMPLETED }
@@ -183,9 +197,18 @@ class DownloadEngine(private val context: Context) {
             if (!inFlight.add(d.key)) continue
             try {
                 cancelled.remove(d.key)
-                val resp = api.download(d.contentId, buildParams(d.episodeId))
-                if (!resp.isSuccessful) continue
-                val data = resp.body() ?: continue
+                // Retoma pelo manifesto guardado em start() — as URLs são públicas
+                // (derivadas do masterUrl, sem assinatura) e não expiram, e assim a retoma
+                // não gasta quota nem esbarra no gate (plano esgotado/expirado).
+                // Só downloads antigos, sem manifesto guardado, pedem licença (1 vez).
+                var data = loadManifest(d.key)
+                if (data == null) {
+                    val resp = api.downloadRaw(d.contentId, buildParams(d.episodeId))
+                    if (!resp.isSuccessful) continue
+                    val raw = resp.body()?.string() ?: continue
+                    data = parseDownloadResponse(raw)
+                    saveManifest(d.key, data)
+                }
                 runManifest(d.key, d.contentId, d.episodeId, data, d.title, d.poster)
             } catch (e: Exception) {
                 // item específico falhou a retomar (rede etc.) — segue para os restantes.
@@ -204,8 +227,20 @@ class DownloadEngine(private val context: Context) {
         }
     }
 
-    private fun buildParams(episodeId: String?): Map<String, String> =
-        if (episodeId.isNullOrBlank()) emptyMap() else mapOf("episode" to episodeId)
+    /**
+     * `lang` é OBRIGATÓRIO na prática: o backend (content.js GET /:id/download) usa
+     * `lang = 'en'` por omissão e getContent() devolve `title: row.title || null` — um
+     * conteúdo registado só em 'pt' (como faz o process.yml: metadata.lang) vem com
+     * `content.title = null` quando se pede 'en'. O web envia sempre o idioma do
+     * utilizador; o Android não enviava, daí o "null" no campo de texto.
+     */
+    private suspend fun buildParams(episodeId: String?): Map<String, String> {
+        val lang = runCatching { LanguageManager(context).languageCode.first() }.getOrDefault("pt")
+        return buildMap {
+            put("lang", lang)
+            if (!episodeId.isNullOrBlank()) put("episode", episodeId)
+        }
+    }
 
     private suspend fun abortIfCancelled(key: String) {
         if (cancelled.remove(key)) {
@@ -242,9 +277,8 @@ class DownloadEngine(private val context: Context) {
             throw Exception("No segments to download")
         }
 
-        // Snapshot local do manifesto — renovável se uma URL assinada expirar.
-        var segUrls: List<String> = manifest.segUrls
-        var initUrl: String? = manifest.initUrl
+        val segUrls: List<String> = manifest.segUrls
+        val initUrl: String? = manifest.initUrl
 
         val startIndex = store.savedSegmentCount(key, total)
         persistProgress(percent(startIndex, total), DownloadStatus.DOWNLOADING)
@@ -283,7 +317,7 @@ class DownloadEngine(private val context: Context) {
                     var attempt = 0
                     var ok = false
                     var lastErr = "sem erro registado"
-                    while (!ok && attempt < 2) {
+                    while (!ok && attempt < 3) {
                         attempt++
                         val url = segUrls.getOrElse(i) { "" }
                         val saved = try {
@@ -299,14 +333,8 @@ class DownloadEngine(private val context: Context) {
                             // cancelamento a meio de um segmento: a chamada HTTP foi
                             // abortada — sai limpo em vez de contar como falha de rede.
                             abortIfCancelled(key)
-                            if (attempt == 1) {
-                                // Possível URL assinada expirada: reobtém o MANIFESTO fresco.
-                                val fresh = runCatching { api.download(contentId, buildParams(episodeId)) }.getOrNull()
-                                fresh?.body()?.let { newData ->
-                                    if (newData.manifest.segUrls.isNotEmpty()) segUrls = newData.manifest.segUrls
-                                    newData.manifest.initUrl?.let { initUrl = it }
-                                }
-                            }
+                            // Mesma URL (pública, não expira): só espera um pouco e repete.
+                            if (attempt < 3) delay(1_500L * attempt)
                         }
                     }
                     if (!ok) throw Exception("Segment $i fetch failed: $lastErr")
@@ -344,8 +372,20 @@ class DownloadEngine(private val context: Context) {
             quality = meta.quality.ifBlank { manifest.segExt },
         )
         store.upsert(completed)
+        store.manifestFile(key).delete()
         return DownloadStart.Started(completed)
     }
+
+    private fun saveManifest(key: String, data: DownloadResponse) {
+        runCatching {
+            store.writeManifestRaw(key, manifestJson.encodeToString(DownloadResponse.serializer(), data))
+        }
+    }
+
+    private fun loadManifest(key: String): DownloadResponse? =
+        runCatching {
+            store.readManifestRaw(key)?.let { manifestJson.decodeFromString(DownloadResponse.serializer(), it) }
+        }.getOrNull()
 
     private fun httpText(url: String): String? {
         val req = Request.Builder().url(url).build()

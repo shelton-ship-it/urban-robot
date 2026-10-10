@@ -116,6 +116,18 @@ fun LoginScreen() {
 fun HomeShell(authState: AuthState, app: PixGoApp) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Voltou ao app (ex.: Pix pago na app do banco, boleto compensado, webhook que
+    // atrasou): revalida o plano. O limite de 1 pedido / 30 s está em AuthRepository.
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                scope.launch { app.authRepository.refreshOnResume() }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     // Estado de navegação sobrevivente a recomposição (ex.: rotação) — o
     // padrão do web é URL-based; aqui persistimos o destino + contexto aberto.
     val navSaved = rememberSaveable { mutableStateOf(MainDest.HOME) }
@@ -443,7 +455,12 @@ fun HomeShell(authState: AuthState, app: PixGoApp) {
                         checkoutUrl = null
                         plansHighlight = null
                         current = MainDest.HOME
-                        scope.launch { app.authRepository.invalidateMeCacheAfterPayment() }
+                        scope.launch {
+                            app.authRepository.invalidateMeCacheAfterPayment()
+                            // Webhook assíncrono / boleto-Pix pendente: o 1.º /me pode ainda
+                            // vir "free" — repete até o plano ficar ativo (máx. ~60 s).
+                            app.authRepository.pollPlanUntilActive()
+                        }
                     }
                 )
             }

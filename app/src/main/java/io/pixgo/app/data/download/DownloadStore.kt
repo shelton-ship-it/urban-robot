@@ -178,6 +178,20 @@ class DownloadStore(private val context: Context) {
         }.getOrNull()
     }
 
+    /** Manifesto/licença guardado em start() para retomar sem novo GET /download. */
+    fun manifestFile(key: String): File = File(dirFor(key), "manifest.json")
+
+    fun writeManifestRaw(key: String, text: String) {
+        val tmp = File(dirFor(key), "manifest.json.part")
+        tmp.writeText(text)
+        val final = manifestFile(key)
+        if (final.exists()) final.delete()
+        if (!tmp.renameTo(final)) tmp.delete()
+    }
+
+    fun readManifestRaw(key: String): String? =
+        manifestFile(key).takeIf { it.exists() }?.readText()
+
     fun segFileName(index: Int): String = "seg%05d.bin".format(index)
     fun initFileName(): String = "init.bin"
 

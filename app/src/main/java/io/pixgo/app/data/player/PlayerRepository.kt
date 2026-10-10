@@ -1,7 +1,9 @@
 package io.pixgo.app.data.player
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Base64
+import androidx.media3.common.Player
 import io.pixgo.app.data.auth.TokenManager
 import io.pixgo.app.data.download.DownloadEngine
 import io.pixgo.app.data.download.DownloadStore
@@ -11,7 +13,9 @@ import io.pixgo.app.data.model.UpsellPlan
 import io.pixgo.app.data.network.HeartbeatBody
 import io.pixgo.app.data.network.NetworkModule
 import io.pixgo.app.data.network.StreamResponse
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
 
 sealed class StreamHandshakeResult {
@@ -25,6 +29,58 @@ sealed class HeartbeatEvent {
     object Ok : HeartbeatEvent()
     data class SessionReplaced(val message: String) : HeartbeatEvent()
     data class FreeTimeExhausted(val message: String?, val plans: List<UpsellPlan> = emptyList()) : HeartbeatEvent()
+}
+
+/**
+ * Equivalente Android de `!video.paused && !video.ended` (ShakaPlayer.tsx / channels/page.tsx).
+ *
+ * IMPORTANTE: buffering NÃO é pausa. Antes o heartbeat usava `isPlaying`, que é false enquanto o
+ * ExoPlayer faz buffering — em redes lentas o tick caía quase sempre num instante de buffering,
+ * era saltado e o tempo grátis quase não era creditado (o modal de limite praticamente nunca
+ * disparava). No web o <video> em buffering continua `!paused` e o tick conta.
+ */
+fun Player.isHeartbeatActive(): Boolean =
+    playWhenReady && playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED
+
+private const val HEARTBEAT_POLL_MS = 500L
+
+/**
+ * Relógio do heartbeat, réplica do `useEffect` play/pause/ended do ShakaPlayer.tsx:
+ *  - ao passar a "a reproduzir" ('play'): [immediate] = true envia logo um heartbeat (VOD) e
+ *    depois repete a cada HEARTBEAT_INTERVAL_MS;
+ *  - ao pausar/terminar ('pause'/'ended'): o relógio pára (e o 'play' seguinte recomeça com
+ *    crédito imediato — o dedup de 100 s do servidor impede duplo crédito);
+ *  - 409/429: [onTerminal] é chamado (o chamador pausa o player e abre o modal) e o relógio só
+ *    volta a armar no próximo 'play', tal como o web faz clearInterval + novo 'play'.
+ * Antes o loop era `delay(120 s)` fixo, sem crédito no início: sessões < 120 s nunca eram
+ * contadas e qualquer tick em buffering era perdido.
+ */
+suspend fun runHeartbeatClock(
+    player: Player,
+    immediate: Boolean,
+    sendNow: suspend () -> HeartbeatEvent,
+    onTerminal: (HeartbeatEvent) -> Unit,
+) {
+    while (currentCoroutineContext().isActive) {
+        while (!player.isHeartbeatActive()) delay(HEARTBEAT_POLL_MS)
+        var lastBeatAt = SystemClock.elapsedRealtime()
+        var first = immediate
+        while (currentCoroutineContext().isActive && player.isHeartbeatActive()) {
+            val due = first || SystemClock.elapsedRealtime() - lastBeatAt >= PlayerRepository.HEARTBEAT_INTERVAL_MS
+            if (due) {
+                first = false
+                val event = sendNow()
+                lastBeatAt = SystemClock.elapsedRealtime()
+                if (event !is HeartbeatEvent.Ok) {
+                    onTerminal(event)
+                    // Se por algum motivo o chamador não pausou, espera pela pausa em vez de martelar o servidor.
+                    while (currentCoroutineContext().isActive && player.isHeartbeatActive()) delay(HEARTBEAT_POLL_MS)
+                    break
+                }
+            }
+            delay(HEARTBEAT_POLL_MS)
+        }
+    }
 }
 
 /**

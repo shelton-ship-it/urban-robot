@@ -47,6 +47,16 @@ interface StreamApi {
         @QueryMap params: Map<String, String>,
     ): Response<io.pixgo.app.data.download.DownloadResponse>
 
+    /**
+     * MESMO endpoint, mas devolve o corpo CRU: a desserialização é feita por
+     * parseDownloadResponse() (tolerante a tipos). Usado pelo DownloadEngine.
+     */
+    @GET("/api/content/{id}/download")
+    suspend fun downloadRaw(
+        @Path("id") contentId: String,
+        @QueryMap params: Map<String, String>,
+    ): Response<okhttp3.ResponseBody>
+
     @retrofit2.http.POST("/api/content/{id}/heartbeat")
     suspend fun heartbeat(@Path("id") contentId: String, @Body body: HeartbeatBody): Response<Unit>
 }

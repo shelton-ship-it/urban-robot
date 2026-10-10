@@ -2,6 +2,13 @@ package io.pixgo.app.data.download
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 
 /**
  * Modelos do contrato REAL de download — pixel_service_v1
@@ -92,3 +99,69 @@ data class DownloadMeta(
     val hasInit: Boolean = false,
     val noncesUrl: String? = null,
 )
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Parser TOLERANTE da resposta de GET /api/content/:id/download.
+//
+// Antes a resposta era desserializada directamente para DownloadResponse. Um único
+// escalar com tipo diferente do esperado (ex.: content.duration fraccionário num campo
+// Int, um null num campo String não-nulo, um id numérico) deitava abaixo o download
+// inteiro com "Unexpected JSON token at offset N" — a licença e os ~500 segmentos já
+// estavam validos, só um campo acessório falhava. O frontend web não sofre disto porque
+// JS não tipa os campos. Aqui lê-se a árvore JSON e extrai-se cada campo de forma
+// defensiva; só a falta do manifesto/segmentos (o que torna o download impossível) é erro.
+// ─────────────────────────────────────────────────────────────────────────────
+private val downloadJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+private fun JsonElement?.str(): String? =
+    (this as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content
+
+private fun JsonElement?.num(): Double? = str()?.toDoubleOrNull()
+
+fun parseDownloadResponse(raw: String): DownloadResponse {
+    val root: JsonObject = try {
+        downloadJson.parseToJsonElement(raw).jsonObject
+    } catch (e: Exception) {
+        android.util.Log.e("PixGoDownload", "JSON inválido (len=${raw.length}): ${e.message}")
+        throw Exception("Resposta de download inválida (${raw.length} bytes): ${e.message?.take(140)}")
+    }
+
+    val m = root["manifest"] as? JsonObject
+        ?: throw Exception("Resposta de download sem manifesto")
+    val segUrls = (m["segUrls"] as? JsonArray)?.mapNotNull { it.str() }.orEmpty()
+
+    val manifest = DownloadManifestJson(
+        contentId = m["contentId"].str() ?: "",
+        segmentCount = m["segmentCount"].num()?.toInt() ?: segUrls.size,
+        noncesUrl = m["noncesUrl"].str()?.takeIf { it.isNotBlank() },
+        masterUrl = m["masterUrl"].str()?.takeIf { it.isNotBlank() },
+        initUrl = m["initUrl"].str()?.takeIf { it.isNotBlank() },
+        segUrls = segUrls,
+        encrypted = m["encrypted"].str()?.let { it == "true" } ?: true,
+        segExt = m["segExt"].str()?.takeIf { it.isNotBlank() } ?: "bin",
+    )
+
+    val c = root["content"] as? JsonObject
+    val content = c?.let {
+        DownloadContentInfo(
+            id = it["id"].str() ?: "",
+            title = it["title"].str() ?: "",
+            type = it["type"].str(),
+            poster = it["poster"].str(),
+            duration = it["duration"].num()?.toInt(),   // aceita 2512 e 2512.64
+        )
+    }
+
+    return DownloadResponse(
+        license = root["license"].str() ?: "",
+        expiresIn = root["expires_in"].num()?.toLong() ?: 0L,
+        expiresAt = root["expires_at"].str() ?: "",
+        drmKeyHex = root["drm_key_hex"].str(),
+        manifest = manifest,
+        content = content,
+        plan = root["plan"].str(),
+        downloadsRemaining = root["downloads_remaining"].num()?.toInt(),
+        downloadsMax = root["downloads_max"].num()?.toInt(),
+    )
+}

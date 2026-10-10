@@ -43,7 +43,7 @@ class ChannelsRepository(context: Context, private val auth: AuthRepository) {
             if (resp.isSuccessful) ChannelGateResult.Ok
             else if (resp.code() == 429) {
                 val err = parseErrorMessage(resp)
-                ChannelGateResult.RateLimited(null, err?.plans ?: emptyList())
+                ChannelGateResult.RateLimited(err?.message, err?.plans ?: emptyList())
             } else ChannelGateResult.Denied(
                 when (resp.code()) {
                     409 -> "Sessão substituída noutro ecrã."

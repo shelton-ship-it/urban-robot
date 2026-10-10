@@ -55,6 +55,7 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import io.pixgo.app.data.channels.ChannelsRepository
 import io.pixgo.app.data.player.HeartbeatEvent
+import io.pixgo.app.data.player.runHeartbeatClock
 import io.pixgo.app.data.player.PlayerFactory
 import io.pixgo.app.data.player.PlayerRepository
 import io.pixgo.app.ui.common.PxPlayerSkeleton
@@ -173,22 +174,22 @@ fun ChannelsPlayerScreen(
         }
     }
 
+    // Heartbeat do canal — channels/page.tsx: sem crédito imediato (immediate=false), a cada
+    // 120 s enquanto o vídeo NÃO estiver pausado. Buffering conta como a reproduzir.
     LaunchedEffect(exoPlayer) {
-        while (true) {
-            delay(PlayerRepository.HEARTBEAT_INTERVAL_MS)
-            if (!exoPlayer.isPlaying) continue
-            when (val event = channelsRepository.heartbeat(channelId)) {
-                is HeartbeatEvent.SessionReplaced -> {
-                    exoPlayer.pause()
-                    sessionReplacedMessage = event.message
+        runHeartbeatClock(
+            player = exoPlayer,
+            immediate = false,
+            sendNow = { channelsRepository.heartbeat(channelId) },
+            onTerminal = { event ->
+                exoPlayer.pause()
+                when (event) {
+                    is HeartbeatEvent.SessionReplaced -> sessionReplacedMessage = event.message
+                    is HeartbeatEvent.FreeTimeExhausted -> freeTime = event.message to event.plans
+                    HeartbeatEvent.Ok -> {}
                 }
-                is HeartbeatEvent.FreeTimeExhausted -> {
-                    exoPlayer.pause()
-                    freeTime = event.message to event.plans
-                }
-                HeartbeatEvent.Ok -> {}
-            }
-        }
+            },
+        )
     }
 
     DisposableEffect(lifecycleOwner, exoPlayer) {

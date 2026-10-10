@@ -135,6 +135,7 @@ fun ChannelsScreen(
     var checkingId by remember { mutableStateOf<String?>(null) }
     // channels/page.tsx: 429 do gate → RateLimitModal com err.data.plans
     var rateLimitPlans by remember { mutableStateOf<List<io.pixgo.app.data.model.UpsellPlan>?>(null) }
+    var rateLimitMessage by remember { mutableStateOf<String?>(null) }
     var showInfo by remember { mutableStateOf(true) }
 
     val animeCategory = categories.firstOrNull { normalizeStr(it.name) == normalizeStr("Animation") }
@@ -206,7 +207,7 @@ fun ChannelsScreen(
             when (val r = repository.checkGate(ch.id)) {
                 is ChannelGateResult.Ok -> onOpenChannel(ch)
                 is ChannelGateResult.Denied -> snackbar.showSnackbar(r.message)
-                is ChannelGateResult.RateLimited -> rateLimitPlans = r.plans
+                is ChannelGateResult.RateLimited -> { rateLimitMessage = r.message; rateLimitPlans = r.plans }
             }
             checkingId = null
         }
@@ -349,8 +350,8 @@ fun ChannelsScreen(
     rateLimitPlans?.let { plans ->
         io.pixgo.app.ui.modals.RateLimitModal(
             plans = plans,
-            message = null,
-            onClose = { rateLimitPlans = null },
+            message = rateLimitMessage,
+            onClose = { rateLimitPlans = null; rateLimitMessage = null },
             onUpgrade = { planId -> rateLimitPlans = null; onUpgrade(planId) },
         )
     }
